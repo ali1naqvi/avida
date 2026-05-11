@@ -3303,6 +3303,7 @@ double cTaskLib::Task_Move(cTaskContext& ctx) const
 {
   int cell_id = ctx.GetOrganism()->GetCellID();
   if (m_world->GetConfig().USE_AVATARS.Get()) cell_id = ctx.GetOrganism()->GetAVCellID();
+  else if (cell_id >= 0) cell_id = m_world->GetPopulation().MapPopCellToEnvCell(cell_id);
   if (cell_id != ctx.GetOrganism()->GetPrevSeenCellID()) {
     ctx.GetOrganism()->SetPrevSeenCellID(cell_id);
     return 1.0;

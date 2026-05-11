@@ -83,6 +83,7 @@ private:
   cMerit merit;             // Relative speed of CPU
   double executionRatio;    //  ratio of current execution merit over base execution merit
   double energy_store;      // Amount of energy.  Determines relative speed of CPU when turned on.
+  double offspring_energy_packet_override;  // <0 => use standard fractional-energy model
   int genome_length;        // Number of instructions in genome.
   int bonus_instruction_count; // Number of times MERIT_BONUS_INT is in genome.
   int copied_size;          // Instructions copied into genome.
@@ -502,6 +503,11 @@ public:
   int GetNumDivides() const { assert(initialized == true); return num_divides;}
   int GetNumDivideFailed() const { assert(initialized == true); return num_divides_failed;}
 
+  // Semel-aware R_0 fitness hook: lets the semel path store the actual brood
+  // size as the parent's lifetime reproductive output before the parent dies.
+  // Offspring get num_divides reset to 0 in SetupOffspring.
+  void SetNumDivides(int n) { assert(initialized == true); num_divides = n; }
+
   int GetGeneration() const { return generation; }
   int GetCPUCyclesUsed() const { assert(initialized == true); return cpu_cycles_used; }
   int GetTimeUsed()   const { assert(initialized == true); return time_used; }
@@ -745,6 +751,8 @@ public:
   void EnergyTestament(const double value); //! external energy given to organism
   void ApplyDonatedEnergy();
   void ReceiveDonatedEnergy(const double value);
+  void SetOffspringEnergyPacketOverride(const double value) { offspring_energy_packet_override = value; }
+  void ClearOffspringEnergyPacketOverride() { offspring_energy_packet_override = -1.0; }
   double ExtractParentEnergy();
   
   // Compare two phenotypes and determine an ordering (arbitrary, but consistant among phenotypes).

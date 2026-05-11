@@ -56,8 +56,17 @@ cHardwareBase::cHardwareBase(cWorld* world, cOrganism* in_organism, cInstSet* in
 {
 	m_task_switching_cost=0;
 	int switch_cost =  world->GetConfig().TASK_SWITCH_PENALTY.Get();
+	// FLAT_ENERGY_COST_PER_INST is a global maintenance cost paid in
+	// SingleProcess_PayPreCosts. It is not declared per instruction in the
+	// instruction set, so HasEnergyCosts() / HasCosts() do not see it. Without
+	// this term, an organism with an instruction set that has no per-inst costs
+	// would skip PayPreCosts entirely and never pay the flat energy tax,
+	// trivially balancing reproduction at R0=1 (parent's energy never decays
+	// from the offspring packet) and breaking selection.
+	const bool has_flat_energy_cost = (world->GetConfig().ENERGY_ENABLED.Get() > 0 &&
+	                                   world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get() > 0.0);
 	m_has_any_costs = (m_has_costs | m_has_ft_costs | m_has_energy_costs | m_has_res_costs | m_has_fem_res_costs | switch_cost | m_has_female_costs | 
-                     m_has_choosy_female_costs | m_has_post_costs | m_has_bonus_costs);
+                     m_has_choosy_female_costs | m_has_post_costs | m_has_bonus_costs | (has_flat_energy_cost ? 1 : 0));
   m_implicit_repro_active = (m_world->GetConfig().IMPLICIT_REPRO_TIME.Get() ||
                              m_world->GetConfig().IMPLICIT_REPRO_CPU_CYCLES.Get() ||
                              m_world->GetConfig().IMPLICIT_REPRO_BONUS.Get() ||
@@ -224,6 +233,14 @@ bool cHardwareBase::Divide_CheckViable(cAvidaContext& ctx, const int parent_size
         // No default group, so divide fails (group opinion is required by cPopulation::ActivateOffspring)
         return false;
       }
+    }
+  }
+  
+  double min_energy = m_world->GetConfig().MIN_ENERGY_TO_REPRODUCE.Get();
+  if (min_energy > 0.0 && m_world->GetConfig().ENERGY_ENABLED.Get()) {
+    if (m_organism->GetPhenotype().GetStoredEnergy() < min_energy) {
+      m_organism->GetPhenotype().SetToDie();
+      return false;
     }
   }
   
@@ -1241,20 +1258,37 @@ bool cHardwareBase::Inst_DefaultEnergyUsage(cAvidaContext& ctx)
 bool cHardwareBase::SingleProcess_PayPreCosts(cAvidaContext& ctx, const Instruction& cur_inst, const int thread_id)
 { 
   if (m_world->GetConfig().ENERGY_ENABLED.Get() > 0) {
-    // TODO:  Get rid of magic number. check avaliable energy first
-    double energy_req = m_inst_energy_cost[cur_inst.GetOp()] * (m_organism->GetPhenotype().GetMerit().GetDouble() / 100.0); //compensate by factor of 100
-    
-    if (energy_req > 0.0) {
-      if (m_organism->GetPhenotype().GetStoredEnergy() >= energy_req) {
-        m_inst_energy_cost[cur_inst.GetOp()] = 0.0;
-        // subtract energy used from current org energy.
-        m_organism->GetPhenotype().ReduceEnergy(energy_req);  
-        
-        // tracking sleeping organisms
-        if (m_inst_set->ShouldSleep(cur_inst)) m_organism->SetSleeping(true);
+    // Per-instruction energy costs from the instruction set are only present
+    // (and m_inst_energy_cost is only allocated) when the instset declares
+    // them. Skip this branch otherwise so the empty cost array is never
+    // indexed -- we only reach PayPreCosts now if FLAT_ENERGY_COST_PER_INST
+    // is set even when the instset has no per-inst costs.
+    if (m_has_energy_costs) {
+      // TODO:  Get rid of magic number. check avaliable energy first
+      double energy_req = m_inst_energy_cost[cur_inst.GetOp()] * (m_organism->GetPhenotype().GetMerit().GetDouble() / 100.0); //compensate by factor of 100
+
+      if (energy_req > 0.0) {
+        if (m_organism->GetPhenotype().GetStoredEnergy() >= energy_req) {
+          m_inst_energy_cost[cur_inst.GetOp()] = 0.0;
+          // subtract energy used from current org energy.
+          m_organism->GetPhenotype().ReduceEnergy(energy_req);
+
+          // tracking sleeping organisms
+          if (m_inst_set->ShouldSleep(cur_inst)) m_organism->SetSleeping(true);
+        } else {
+          m_organism->GetPhenotype().SetToDie();
+          return false; // no more, your died...  (evil laugh)
+        }
+      }
+    }
+
+    double flat_cost = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
+    if (flat_cost > 0.0) {
+      if (m_organism->GetPhenotype().GetStoredEnergy() >= flat_cost) {
+        m_organism->GetPhenotype().ReduceEnergy(flat_cost);
       } else {
         m_organism->GetPhenotype().SetToDie();
-        return false; // no more, your died...  (evil laugh)
+        return false;
       }
     }
   }
@@ -1349,7 +1383,7 @@ bool cHardwareBase::SingleProcess_PayPreCosts(cAvidaContext& ctx, const Instruct
     if (m_active_thread_costs[thread_id] == 1) m_active_thread_costs[thread_id] = 0;
   }
   
-  if (m_world->GetConfig().ENERGY_ENABLED.Get() > 0) {
+  if (m_world->GetConfig().ENERGY_ENABLED.Get() > 0 && m_has_energy_costs) {
     m_inst_energy_cost[cur_inst.GetOp()] = m_inst_set->GetEnergyCost(cur_inst); // reset instruction energy cost
   }
   return true;

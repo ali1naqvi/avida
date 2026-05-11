@@ -37,6 +37,10 @@
 #include "cUserFeedback.h"
 #include "cWorld.h"
 
+#include <algorithm>
+#include <limits>
+#include <vector>
+
 class cActionInjectResource : public cAction
 {
 private:
@@ -327,6 +331,145 @@ public:
         
     m_world->GetPopulation().UpdateGradientCount(ctx, m_world->GetVerbosity(), m_world, m_res_name);        
   } 
+};
+
+/* Change a Gradient Resource, choosing the new peak from the least-populated area. */
+class cActionSetGradientResourceLeastPopulated : public cAction
+{
+private:
+  cString env_string;
+  cString m_res_name;
+  int m_radius;
+
+public:
+  cActionSetGradientResourceLeastPopulated(cWorld* world, const cString& args, Feedback&)
+    : cAction(world, args), env_string(""), m_res_name(""), m_radius(5)
+  {
+    cString largs(args);
+    if (largs.GetSize()) {
+      cString first = largs.PopWord();
+      if (first.IsNumber()) {
+        m_radius = first.AsInt();
+        env_string = largs;
+      } else {
+        env_string = args;
+      }
+    }
+    if (m_radius < 0) m_radius = 0;
+
+    cString parse_args(env_string);
+    if (parse_args.GetSize()) parse_args.PopWord();
+    if (parse_args.GetSize()) m_res_name = parse_args.PopWord().Pop(':');
+
+    assert(m_world->GetEnvironment().GetResourceLib().GetResource(m_res_name));
+  }
+
+  static const cString GetDescription() { return "Arguments: [int radius=5] <string env_string>"; }
+
+  void Process(cAvidaContext& ctx)
+  {
+    cUserFeedback feedback;
+    m_world->GetEnvironment().LoadLine(env_string, feedback);
+
+    for (int i = 0; i < feedback.GetNumMessages(); i++) {
+      switch (feedback.GetMessageType(i)) {
+        case cUserFeedback::UF_ERROR:    cerr << "error: "; break;
+        case cUserFeedback::UF_WARNING:  cerr << "warning: "; break;
+        default: break;
+      };
+      cerr << feedback.GetMessage(i) << endl;
+    }
+
+    cPopulation& pop = m_world->GetPopulation();
+    cResource* res = m_world->GetEnvironment().GetResourceLib().GetResource(m_res_name);
+    if (res == NULL) return;
+
+    const int env_w = pop.GetEnvWorldX();
+    const int env_h = pop.GetEnvWorldY();
+    if (env_w <= 0 || env_h <= 0) return;
+
+    int min_x = res->GetMinX();
+    int max_x = res->GetMaxX();
+    int min_y = res->GetMinY();
+    int max_y = res->GetMaxY();
+
+    if (min_x == 0 && max_x == 0 && min_y == 0 && max_y == 0) {
+      min_x = 0;
+      min_y = 0;
+      max_x = env_w - 1;
+      max_y = env_h - 1;
+    }
+
+    min_x = std::max(0, std::min(min_x, env_w - 1));
+    max_x = std::max(0, std::min(max_x, env_w - 1));
+    min_y = std::max(0, std::min(min_y, env_h - 1));
+    max_y = std::max(0, std::min(max_y, env_h - 1));
+    if (min_x > max_x) std::swap(min_x, max_x);
+    if (min_y > max_y) std::swap(min_y, max_y);
+
+    if (m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 &&
+        m_world->GetConfig().DEADLY_BOUNDARIES.Get() > 0 &&
+        env_w > 2 && env_h > 2) {
+      min_x = std::max(min_x, 1);
+      max_x = std::min(max_x, env_w - 2);
+      min_y = std::max(min_y, 1);
+      max_y = std::min(max_y, env_h - 2);
+    }
+
+    std::vector<int> org_env_cells;
+    const Apto::Array<cOrganism*, Apto::Smart>& live_orgs = pop.GetLiveOrgList();
+    org_env_cells.reserve(static_cast<size_t>(live_orgs.GetSize()));
+    for (int i = 0; i < live_orgs.GetSize(); i++) {
+      cOrganism* org = live_orgs[i];
+      if (org == NULL || org->IsDead()) continue;
+      const int cell_id = org->GetCellID();
+      if (cell_id < 0 || cell_id >= pop.GetSize()) continue;
+      org_env_cells.push_back(pop.MapPopCellToEnvCell(cell_id));
+    }
+
+    int best_count = std::numeric_limits<int>::max();
+    std::vector<int> best_cells;
+    const int radius_sq = m_radius * m_radius;
+
+    for (int y = min_y; y <= max_y; y++) {
+      for (int x = min_x; x <= max_x; x++) {
+        int count = 0;
+        for (size_t i = 0; i < org_env_cells.size(); i++) {
+          const int env_cell = org_env_cells[i];
+          if (env_cell < 0) continue;
+          const int ox = env_cell % env_w;
+          const int oy = env_cell / env_w;
+          const int dx = ox - x;
+          const int dy = oy - y;
+          if ((dx * dx) + (dy * dy) <= radius_sq) count++;
+        }
+
+        if (count < best_count) {
+          best_count = count;
+          best_cells.clear();
+          best_cells.push_back(y * env_w + x);
+        } else if (count == best_count) {
+          best_cells.push_back(y * env_w + x);
+        }
+      }
+    }
+
+    if (!best_cells.empty()) {
+      const int picked = best_cells[ctx.GetRandom().GetInt(static_cast<int>(best_cells.size()))];
+      res->SetPeakX(picked % env_w);
+      res->SetPeakY(picked / env_w);
+
+      if (m_world->GetVerbosity() >= VERBOSE_ON) {
+        cout << "SetGradientResourceLeastPopulated: moved "
+             << (const char*)m_res_name << " peak to ("
+             << res->GetPeakX() << "," << res->GetPeakY()
+             << ") with " << best_count
+             << " organism(s) within radius " << m_radius << "." << endl;
+      }
+    }
+
+    m_world->GetPopulation().UpdateGradientCount(ctx, m_world->GetVerbosity(), m_world, m_res_name);
+  }
 };
 
 class cActionSetGradientPlatInflow : public cAction
@@ -1717,6 +1860,7 @@ void RegisterEnvironmentActions(cActionLibrary* action_lib)
   action_lib->Register<cActionMergeResourceAcrossDemes>("MergeResourceAcrossDemes");
   action_lib->Register<cActionChangeEnvironment>("ChangeEnvironment");
   action_lib->Register<cActionSetGradientResource>("SetGradientResource");
+  action_lib->Register<cActionSetGradientResourceLeastPopulated>("SetGradientResourceLeastPopulated");
   action_lib->Register<cActionSetGradientPlatInflow>("SetGradientPlatInflow");
   action_lib->Register<cActionSetGradientPlatOutflow>("SetGradientPlatOutflow");
   action_lib->Register<cActionSetGradientConeInflow>("SetGradientConeInflow");

@@ -1652,7 +1652,7 @@ void cZoomScreen::DrawMiniMap()
   if (info.GetMapMode() == MAP_BASIC)           Print(name_y, name_x, "Genotypes");
   else if (info.GetMapMode() == MAP_COMBO)      Print(name_y, name_x, "  Combo  ");
   else if (info.GetMapMode() == MAP_INJECT)     Print(name_y, name_x, "Modified ");
-  else if (info.GetMapMode() == MAP_RESOURCE)   Print(name_y, name_x, "Resources");
+  else if (info.GetMapMode() == MAP_RESOURCE)   Print(name_y, name_x, "Gradient ");
   else if (info.GetMapMode() == MAP_AGE)        Print(name_y, name_x, "   Age   ");
   else if (info.GetMapMode() == MAP_BREED_TRUE) Print(name_y, name_x, "BreedTrue");
   else if (info.GetMapMode() == MAP_PARASITE)   Print(name_y, name_x, "Parasites");
@@ -1662,6 +1662,7 @@ void cZoomScreen::DrawMiniMap()
   else if (info.GetMapMode() == MAP_MUTATIONS)  Print(name_y, name_x, "Mutations");
   else if (info.GetMapMode() == MAP_THREAD)     Print(name_y, name_x, " Threads ");
   else if (info.GetMapMode() == MAP_LINEAGE)    Print(name_y, name_x, " Lineage ");
+  else if (info.GetMapMode() == MAP_ENERGY)     Print(name_y, name_x, " Energy ");
   
   
   int virtual_x = (mini_center_id % map_x_size) + map_x_size;
@@ -1690,4 +1691,3 @@ void cZoomScreen::DrawMiniMap()
   
   Refresh();
 }
-

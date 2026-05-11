@@ -40,6 +40,7 @@ cPhenotype::cPhenotype(cWorld* world, int parent_generation, int num_nops)
 : m_world(world)
 , initialized(false)
 , energy_store(0.0)
+, offspring_energy_packet_override(-1.0)
 , cur_task_count(m_world->GetEnvironment().GetNumTasks())
 , cur_para_tasks(m_world->GetEnvironment().GetNumTasks())
 , cur_host_tasks(m_world->GetEnvironment().GetNumTasks())
@@ -129,7 +130,8 @@ cPhenotype& cPhenotype::operator=(const cPhenotype& in_phen)
   // 1. These are values calculated at the last divide (of self or offspring)
   merit                    = in_phen.merit;
   executionRatio           = in_phen.executionRatio;
-  energy_store             = in_phen.energy_store;    
+  energy_store             = in_phen.energy_store;
+  offspring_energy_packet_override = in_phen.offspring_energy_packet_override;
   energy_tobe_applied      = in_phen.energy_tobe_applied;
   energy_testament         = in_phen.energy_testament;
   energy_received_buffer   = in_phen.energy_received_buffer;
@@ -355,7 +357,11 @@ void cPhenotype::SetupOffspring(const cPhenotype& parent_phenotype, const Instru
   else 
     executionRatio = parent_phenotype.executionRatio;
   
-  energy_store    = min(energy_store, m_world->GetConfig().ENERGY_CAP.Get());
+  //energy_store    = min(energy_store, m_world->GetConfig().ENERGY_CAP.Get());
+  {
+    double ecap = m_world->GetConfig().ENERGY_CAP.Get();
+    if (ecap >= 0.0) energy_store = min(energy_store, ecap);
+  }
   energy_tobe_applied = 0.0;
   energy_testament = 0.0;
   energy_received_buffer = 0.0;
@@ -366,7 +372,11 @@ void cPhenotype::SetupOffspring(const cPhenotype& parent_phenotype, const Instru
   gestation_time  = parent_phenotype.gestation_time;
   gestation_start = 0;
   cpu_cycles_used = 0;
-  fitness         = parent_phenotype.fitness;
+  // With FITNESS_METHOD 3 (lifetime reproductive output), a newborn should
+  // start with its own reproductive record, not inherit the parent's score.
+  // Parent-derived fitness history is still copied into last_fitness below.
+  if (m_world->GetConfig().FITNESS_METHOD.Get() == 3) fitness = 0.0;
+  else fitness = parent_phenotype.fitness;
   div_type        = parent_phenotype.div_type;
   
   assert(genome_length > 0);
@@ -464,7 +474,10 @@ void cPhenotype::SetupOffspring(const cPhenotype& parent_phenotype, const Instru
   last_attacks              = parent_phenotype.last_attacks;
   last_kills                = parent_phenotype.last_kills;
   last_sense_count          = parent_phenotype.last_sense_count;
-  last_fitness              = CalcFitness(last_merit_base, last_bonus, gestation_time, last_cpu_cycles_used);
+  // last_fitness tracks parent-side historical fitness context (used by
+  // several comparisons/ratios), while current fitness above is initialized
+  // from the offspring's own state for FITNESS_METHOD 3.
+  last_fitness              = parent_phenotype.fitness;
   last_child_germline_propensity = parent_phenotype.last_child_germline_propensity;   // chance of child being a germline cell; @JEB
   
   last_from_message_count    = parent_phenotype.last_from_message_count;
@@ -603,7 +616,10 @@ void cPhenotype::SetupInject(const InstructionSequence& _genome)
   merit           = genome_length;
   copied_size     = genome_length;
   executed_size   = genome_length;
-  energy_store    = min(m_world->GetConfig().ENERGY_GIVEN_ON_INJECT.Get(), m_world->GetConfig().ENERGY_CAP.Get());
+  // energy_store    = min(m_world->GetConfig().ENERGY_GIVEN_ON_INJECT.Get(), m_world->GetConfig().ENERGY_CAP.Get());
+  double inject_energy = m_world->GetConfig().ENERGY_GIVEN_ON_INJECT.Get();
+  double cap = m_world->GetConfig().ENERGY_CAP.Get();
+  energy_store    = (cap < 0.0) ? inject_energy : min(inject_energy, cap);
   energy_tobe_applied = 0.0;
   energy_testament = 0.0;
   energy_received_buffer = 0.0;
@@ -1850,7 +1866,19 @@ double cPhenotype::CalcFitness(double _merit_base, double _bonus, int _gestation
       out_fitness = net_bonus / (net_bonus + 1)* exp (_gestation_time * log(1 - m_world->GetConfig().FITNESS_COEFF_1.Get())); 
     }
       break;
-      
+
+    case 3: // Lifetime reproductive output (biologically R_0: "net reproductive rate").
+    {
+      // fitness = cumulative successful offspring produced over the organism's lifetime.
+      // CalcFitness is called from DivideReset before num_divides is incremented, so
+      // "(num_divides + 1)" counts the divide that just completed. No time normalization:
+      // an organism that ultimately produced k offspring has fitness k regardless of how
+      // fast or slow it did so. Starving / wandering organisms that never divide never
+      // have a positive fitness recorded.
+      out_fitness = static_cast<double>(num_divides + 1);
+    }
+      break;
+
     default:
       cout << "Unknown FITNESS_METHOD!" << endl;
       exit(1);
@@ -1975,7 +2003,8 @@ void cPhenotype::ReduceEnergy(const double cost) {
 }
 
 void cPhenotype::SetEnergy(const double value) {
-  energy_store = max(0.0, min(value, m_world->GetConfig().ENERGY_CAP.Get()));
+  double cap = m_world->GetConfig().ENERGY_CAP.Get();
+  energy_store = (cap < 0.0) ? max(0.0, value) : max(0.0, min(value, cap));
 }
 
 void cPhenotype::DoubleEnergyUsage() {
@@ -2065,6 +2094,8 @@ double cPhenotype::ExtractParentEnergy() {
   double frac_parent_energy_given_at_birth = m_world->GetConfig().FRAC_PARENT_ENERGY_GIVEN_TO_ORG_AT_BIRTH.Get();
   double frac_energy_decay_at_birth = m_world->GetConfig().FRAC_ENERGY_DECAY_AT_ORG_BIRTH.Get();
   double energy_cap = m_world->GetConfig().ENERGY_CAP.Get();
+  const double packet_override = offspring_energy_packet_override;
+  offspring_energy_packet_override = -1.0;
   
   // apply energy if APPLY_ENERGY_METHOD is set to "on divide" (0)
   if(m_world->GetConfig().APPLY_ENERGY_METHOD.Get() == 0) {
@@ -2075,9 +2106,28 @@ double cPhenotype::ExtractParentEnergy() {
   // decay of energy in parent
   ReduceEnergy(GetStoredEnergy() * frac_energy_decay_at_birth);
   
+  if (GetStoredEnergy() <= 0.0) return 0.0;
+
+  // Optional fixed packet model (used by `repro` when SEMEL_ENERGY_PER_OFFSPRING > 0):
+  // parent must be able to fund the packet; child receives packet + ENERGY_GIVEN_AT_BIRTH.
+  if (packet_override > 0.0) {
+    if (GetStoredEnergy() < packet_override) return 0.0;
+    ReduceEnergy(packet_override);
+
+    const double raw_child_energy = packet_override + energy_given_at_birth;
+    const double child_energy =
+      (energy_cap < 0.0) ? max(0.0, raw_child_energy) : max(0.0, min(raw_child_energy, energy_cap));
+
+    cMerit parentMerit(ConvertEnergyToMerit(GetStoredEnergy() * GetEnergyUsageRatio()));
+    if (parentMerit.GetDouble() > 0.0) SetMerit(parentMerit);
+    else SetToDie();
+
+    return child_energy;
+  }
+
   // calculate energy to be given to child
-  double child_energy = max(0.0, min(GetStoredEnergy() * frac_parent_energy_given_at_birth + energy_given_at_birth, energy_cap));
-  assert(GetStoredEnergy()>0.0);
+  double raw_child_energy = GetStoredEnergy() * frac_parent_energy_given_at_birth + energy_given_at_birth;
+  double child_energy = (energy_cap < 0.0) ? max(0.0, raw_child_energy) : max(0.0, min(raw_child_energy, energy_cap));
   // adjust energy in parent
   ReduceEnergy(child_energy - 2*energy_given_at_birth); // 2*energy_given_at_birth: 1 in child_energy & 1 for parent
   

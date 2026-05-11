@@ -24,6 +24,7 @@
 #define cPopulation_h
 
 #include "avida/data/Provider.h"
+#include "avida/core/Genome.h"
 
 #include "cBirthChamber.h"
 #include "cDeme.h"
@@ -36,6 +37,8 @@
 
 #include <fstream>
 #include <map>
+#include <string>
+#include <vector>
 
 
 class cAvidaContext;
@@ -62,6 +65,35 @@ typedef Apto::SmartPtr<cPopulationOrgStatProvider, Apto::InternalRCObject> cPopu
 
 class cPopulation : public Data::ArgumentedProvider
 {
+public:
+  struct LifetimeFitnessChampion {
+    bool valid;
+    int update;
+    double fitness;
+    int org_id;
+    int pop_cell_id;
+    int env_cell_id;
+    int env_x;
+    int env_y;
+    int easterly;
+    int northerly;
+    int generation;
+    int age;
+    int num_divides;
+    double stored_energy;
+    double merit;
+    int gestation_time;
+    int genotype_id;
+    cString genotype_name;
+    Genome genome;
+
+    LifetimeFitnessChampion()
+      : valid(false), update(-1), fitness(-1.0), org_id(-1), pop_cell_id(-1),
+        env_cell_id(-1), env_x(-1), env_y(-1), easterly(0), northerly(0),
+        generation(0), age(0), num_divides(0), stored_energy(0.0), merit(0.0), gestation_time(0),
+        genotype_id(-1), genotype_name(""), genome() { ; }
+  };
+
 private:
   // Components...
   cWorld* m_world;
@@ -87,6 +119,8 @@ private:
   
   Apto::Array<GeneticRepresentationPtr> parasite_genotype_list;
   Apto::Array<GeneticRepresentationPtr> host_genotype_list;
+  int m_gen_lock_current_gen;
+  LifetimeFitnessChampion m_lifetime_fitness_champion;
   
   // Data Tracking...
   tList<cPopulationCell> reaper_queue; // Death order in some mass-action runs
@@ -106,6 +140,8 @@ private:
   // Other data...
   int world_x;                         // Structured population width.
   int world_y;                         // Structured population height.
+  int env_world_x;                     // Width of the environment (resource/gradient) grid; defaults to world_x.
+  int env_world_y;                     // Height of the environment (resource/gradient) grid; defaults to world_y.
   int num_organisms;                   // Cell count with living organisms
   int num_prey_organisms;
   int num_pred_organisms;
@@ -120,6 +156,7 @@ private:
   std::map<int, int> m_groups; //<! Maps the group id to the number of orgs in the group
   std::map<int, int> m_group_females; //<! Maps the group id to the number of females in the group
   std::map<int, int> m_group_males; //<! Maps the group id to the number of males in the group
+  std::map<std::string, int> m_shared_gradient_world_cells;
 
   int m_hgt_resid; //!< HGT resource ID.
 
@@ -148,6 +185,9 @@ public:
 
   // cPopulation
   
+  void ConsiderLifetimeFitnessChampion(cOrganism* organism, double fitness);
+  const LifetimeFitnessChampion& GetLifetimeFitnessChampion() const { return m_lifetime_fitness_champion; }
+
   void AttachOrgStatProvider(cPopulationOrgStatProviderPtr provider) { m_org_stat_providers.Push(provider); }
   
   void ResizeCellGrid(int x, int y);
@@ -156,6 +196,7 @@ public:
 
   // Activate the offspring of an organism in the population
   bool ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_genome, cOrganism* parent_organism);
+  bool ActivateSemelOffspring(cAvidaContext& ctx, const Genome& offspring_genome, cOrganism* parent_organism, int num_offspring);
   bool ActivateParasite(cOrganism* host, Systematics::UnitPtr parent, const cString& label, const InstructionSequence& injected_code);
   
   // Helper function for ActivateParasite - returns if the parasite from the infected host should infect the target host
@@ -298,15 +339,82 @@ public:
   int GetSize() const { return cell_array.GetSize(); }
   int GetWorldX() const { return world_x; }
   int GetWorldY() const { return world_y; }
+  int GetEnvWorldX() const { return env_world_x; }
+  int GetEnvWorldY() const { return env_world_y; }
+  bool DecoupledWorldPositionsEnabled() const { return m_world->GetConfig().DECOUPLE_WORLD_POSITION.Get(); }
+
+  // Translate a population cell id (in [0, world_x*world_y)) to the corresponding
+  // environment cell id (in [0, env_world_x*env_world_y)). When the two grids share
+  // the same dimensions this is the identity mapping. When they differ, both grids
+  // are assumed to cover the same physical area so we linearly scale.
+  //
+  // DECOUPLED WORLD POSITION: if DECOUPLE_WORLD_POSITION is enabled and the
+  // cell at pop_cell_id has an explicit per-organism env override (set by
+  // InjectOutsideGradient, InjectAwayFromGradientPeak, or the `move`
+  // instruction), that env cell is returned instead. This decouples an
+  // organism's world (env-grid) position from its population grid slot.
+  int MapPopCellToEnvCellByGrid(int pop_cell_id) const {
+    if (env_world_x == world_x && env_world_y == world_y) return pop_cell_id;
+    if (pop_cell_id < 0) return pop_cell_id;
+    const int px = pop_cell_id % world_x;
+    const int py = pop_cell_id / world_x;
+    int ex = (px * env_world_x) / world_x;
+    int ey = (py * env_world_y) / world_y;
+    if (ex >= env_world_x) ex = env_world_x - 1;
+    if (ey >= env_world_y) ey = env_world_y - 1;
+    return ey * env_world_x + ex;
+  }
+  int MapPopCellToEnvCell(int pop_cell_id) const {
+    if (DecoupledWorldPositionsEnabled() && pop_cell_id >= 0 && pop_cell_id < cell_array.GetSize()) {
+      const int override_id = cell_array[pop_cell_id].GetOrgEnvCellID();
+      if (override_id >= 0) return override_id;
+    }
+    return MapPopCellToEnvCellByGrid(pop_cell_id);
+  }
+
+  // Build the set of env-grid cells that sit OUTSIDE every GRADIENT_RESOURCE's
+  // food disc by at least `margin` env-grid cells of empty space. A gradient's
+  // food disc has radius `spread` around its peak (the resource is hard-clipped
+  // to that disc per cGradientCount.cc:319), so an env cell is eligible iff
+  // euclidean_distance(cell, nearest_point_of_peak_bbox) > spread + margin
+  // for every gradient. When res_name is non-empty, only the gradient with
+  // that name is considered. The output array is appended to (caller may
+  // pre-clear) and contains env-cell ids (ey * env_world_x + ex).
+  void BuildEnvCellsOutsideGradient(int margin, const cString& res_name, std::vector<int>& out_cells) const;
+
+  // Convenience wrapper around BuildEnvCellsOutsideGradient: pick one
+  // uniformly-random env-grid cell from the eligible set. Returns -1 if no
+  // eligible cell exists.
+  int PickEnvCellOutsideGradient(cAvidaContext& ctx, int margin, const cString& res_name = cString("")) const;
+
+  // Build the set of env-grid cells at least `min_distance` cells away from
+  // every GRADIENT_RESOURCE peak movement bbox. Unlike
+  // BuildEnvCellsOutsideGradient, this does NOT include the gradient spread in
+  // the exclusion radius, so it works for whole-environment gradients where
+  // every cell has some food but starts should still be separated from the main
+  // concentration.
+  void BuildEnvCellsAwayFromGradientPeak(int min_distance, const cString& res_name, std::vector<int>& out_cells) const;
+
+  // Convenience wrapper around BuildEnvCellsAwayFromGradientPeak.
+  int PickEnvCellAwayFromGradientPeak(cAvidaContext& ctx, int min_distance, const cString& res_name = cString("")) const;
+
+  // Pick an env-grid start cell from a pre-built eligible pool, honoring
+  // OFFSPRING_WORLD_POS_SHARED_INTERVAL. mode/distance/res_name are included
+  // in the cache key so different gradient-start policies do not collide.
+  int PickGradientWorldCell(cAvidaContext& ctx, int mode, int distance, const cString& res_name,
+                            int generation, std::vector<int>& eligible_cells, int& used);
+  void ClearSharedGradientWorldCellCache() { m_shared_gradient_world_cells.clear(); }
+  void ResetOrganismWorldPositionsAfterGradientReset(cAvidaContext& ctx, const cString& res_name);
+
   int GetNumDemes() const { return deme_array.GetSize(); }
   cDeme& GetDeme(int i) { return deme_array[i]; }
 
   cPopulationCell& GetCell(int in_num) { assert(in_num >=0); assert(in_num < cell_array.GetSize()); return cell_array[in_num]; }
   const Apto::Array<double>& GetResources(cAvidaContext& ctx) const { return resource_count.GetResources(ctx); }
-  const Apto::Array<double>& GetCellResources(int cell_id, cAvidaContext& ctx) const { return resource_count.GetCellResources(cell_id, ctx); } 
-  const Apto::Array<double>& GetFrozenResources(cAvidaContext& ctx, int cell_id) const { return resource_count.GetFrozenResources(ctx, cell_id); }
-  double GetFrozenCellResVal(cAvidaContext& ctx, int cell_id, int res_id) const { return resource_count.GetFrozenCellResVal(ctx, cell_id, res_id); }
-  double GetCellResVal(cAvidaContext& ctx, int cell_id, int res_id) const { return resource_count.GetCellResVal(ctx, cell_id, res_id); }
+  const Apto::Array<double>& GetCellResources(int cell_id, cAvidaContext& ctx) const { return resource_count.GetCellResources(MapPopCellToEnvCell(cell_id), ctx); }
+  const Apto::Array<double>& GetFrozenResources(cAvidaContext& ctx, int cell_id) const { return resource_count.GetFrozenResources(ctx, MapPopCellToEnvCell(cell_id)); }
+  double GetFrozenCellResVal(cAvidaContext& ctx, int cell_id, int res_id) const { return resource_count.GetFrozenCellResVal(ctx, MapPopCellToEnvCell(cell_id), res_id); }
+  double GetCellResVal(cAvidaContext& ctx, int cell_id, int res_id) const { return resource_count.GetCellResVal(ctx, MapPopCellToEnvCell(cell_id), res_id); }
   const Apto::Array<double>& GetDemeResources(int deme_id, cAvidaContext& ctx) { return GetDeme(deme_id).GetDemeResourceCount().GetResources(ctx); }  
   const Apto::Array<double>& GetDemeCellResources(int deme_id, int cell_id, cAvidaContext& ctx) { return GetDeme(deme_id).GetDemeResourceCount().GetCellResources( GetDeme(deme_id).GetRelativeCellID(cell_id), ctx ); } 
   void TriggerDoUpdates(cAvidaContext& ctx) { resource_count.UpdateResources(ctx); }
@@ -480,7 +588,8 @@ private:
   void CCladeSetupOrganism(cOrganism* organism); 
 	
   // Must be called to activate *any* organism in the population.
-  bool ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, cPopulationCell& target_cell, bool assign_group = true, bool is_inject = false);
+  bool ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, cPopulationCell& target_cell,
+                        bool assign_group = true, bool is_inject = false, int org_env_cell_id = -1);
   
   void TestForMiniTrace(cOrganism* in_organism);
   void SetupMiniTrace(cOrganism* in_organism);

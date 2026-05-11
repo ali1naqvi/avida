@@ -188,6 +188,17 @@ private:
   int min_gestation_time;
   int min_genome_length;
 
+  // --------  Terminal fitness among deaths this update (semel / completed lives) ---------
+  // Accumulated from KillOrganism during the update; finalized at the start of
+  // UpdateOrganismStats. For FITNESS_METHOD 3 use phenotype fitness (R0); else life_fitness.
+  double m_death_fit_sum_accum;
+  int m_death_fit_count_accum;
+  double m_death_fit_max_accum;
+  bool m_death_fit_have_max_accum;
+  double ave_fitness_at_death_snapshot;
+  double max_fitness_at_death_snapshot;
+  int death_fitness_sample_count;
+
 
   // --------  Population Stats  ---------
   int num_births;
@@ -469,6 +480,11 @@ public:
   void SetMinMerit(double in_min_merit) { min_merit = in_min_merit; }
   void SetMinGestationTime(int in_min_gestation_time) { min_gestation_time = in_min_gestation_time; }
   void SetMinGenomeLength(int in_min_genome_length) { min_genome_length = in_min_genome_length; }
+
+  //! Called from cPopulation::KillOrganism for each removal (death) this update.
+  void RecordDeathFitnessTerminal(double terminal_fitness);
+  //! Called at the start of cPopulation::UpdateOrganismStats; publishes mean/max for the update.
+  void FinalizeDeathFitnessSnapshot();
 
   void SetPreyEntropy(double in_prey_entropy) { prey_entropy = in_prey_entropy; }
   void SetPredEntropy(double in_pred_entropy) { pred_entropy = in_pred_entropy; }
@@ -801,6 +817,13 @@ public:
   double GetMaxMerit() const { return max_merit; }
   int GetMaxGestationTime() const { return max_gestation_time; }
   int GetMaxGenomeLength() const { return max_genome_length; }
+
+  //! Mean terminal fitness among organisms that died in the last completed update.
+  double GetAveFitnessAtDeath() const { return ave_fitness_at_death_snapshot; }
+  //! Max terminal fitness among organisms that died in the last completed update.
+  double GetMaxFitnessAtDeath() const { return max_fitness_at_death_snapshot; }
+  //! Count of deaths contributing to GetAve/GetMaxFitnessAtDeath (usually equals num_deaths last update).
+  int GetDeathFitnessSampleCount() const { return death_fitness_sample_count; }
 
   double GetMinFitness() const { return min_fitness; }
   double GetMinMerit() const { return min_merit; }

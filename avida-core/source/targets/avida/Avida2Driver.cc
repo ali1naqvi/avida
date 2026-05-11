@@ -126,7 +126,12 @@ void Avida2Driver::Run()
       cout.setf(ios::showpoint);
       cout << "UD: " << setw(6) << stats.GetUpdate() << "  ";
       cout << "Gen: " << setw(9) << setprecision(7) << stats.SumGeneration().Average() << "  ";
-      cout << "Fit: " << setw(9) << setprecision(7) << stats.GetAveFitness() << "  ";
+      // "Fit" = mean phenotype fitness at death this update (FITNESS_METHOD 3: mean R0 among
+      // those who died). Live-population mean is often ~0 with repro-semel — see GetAveFitness().
+      cout << "Fit: " << setw(9) << setprecision(7) << stats.GetAveFitnessAtDeath() << "  ";
+      cout << "MaxFit: " << setw(9) << setprecision(7) << stats.GetMaxFitnessAtDeath() << "  ";
+      const cPopulation::LifetimeFitnessChampion& lifetime_champ = population.GetLifetimeFitnessChampion();
+      cout << "BestFit: " << setw(9) << setprecision(7) << (lifetime_champ.valid ? lifetime_champ.fitness : 0.0) << "  ";
       cout << "Orgs: " << setw(6) << population.GetNumOrganisms() << "  ";
       if (m_world->GetPopulation().GetNumDemes() > 1) cout << "Demes: " << setw(4) << stats.GetNumOccupiedDemes() << " ";
       if (m_world->GetVerbosity() == VERBOSE_ON || m_world->GetVerbosity() == VERBOSE_DETAILS) {
@@ -195,5 +200,4 @@ void Avida2Driver::StdIOFeedback::Notify(const char* fmt, ...)
   va_end(args);
   printf("\n");
 }
-
 

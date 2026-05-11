@@ -200,3 +200,43 @@ char cSymbolUtil::GetLineageSymbol(const cPopulationCell & cell)
   return 'A' + (organism.GetLineageLabel() % 12);
 }
 
+static int EnergyBin(double e)
+{
+  if (e <= 0.0) return 0;
+  if (e < 1.0) return 1;
+  if (e < 5.0) return 2;
+  if (e < 10.0) return 3;
+  if (e < 20.0) return 4;
+  if (e < 50.0) return 5;
+  if (e < 100.0) return 6;
+  if (e < 200.0) return 7;
+  if (e < 500.0) return 8;
+  return 9;
+}
+
+char cSymbolUtil::GetEnergySymbol(const cPopulationCell& cell)
+{
+  if (!cell.IsOccupied()) return ' ';
+  const double e = cell.GetOrganism()->GetPhenotype().GetStoredEnergy();
+  const int b = EnergyBin(e);
+  return (char)('0' + b);
+}
+
+char cSymbolUtil::GetEnergyColor(const cPopulationCell& cell)
+{
+  if (!cell.IsOccupied()) return ' ';
+  const double e = cell.GetOrganism()->GetPhenotype().GetStoredEnergy();
+  const int b = EnergyBin(e);
+
+  // Viewer color codes (see `cScreen::SetSymbolColor`):
+  // - '1' => bold white
+  // - 'G'..'L' => normal colors 1..6
+  if (b <= 1) return '1';
+  if (b == 2) return 'G';
+  if (b == 3) return 'H';
+  if (b == 4) return 'I';
+  if (b == 5) return 'J';
+  if (b == 6) return 'K';
+  return 'L';
+}
+

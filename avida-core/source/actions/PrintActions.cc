@@ -1209,6 +1209,211 @@ public:
   }
 };
 
+/*
+ Write the highest-fitness organism/genotype seen so far to disk.
+
+ This differs from PrintDominantGenotype: "dominant" in Avida means the most
+ abundant genotype, while this action tracks the organism with the highest
+ phenotype fitness currently present in the population. With FITNESS_METHOD 3,
+ that fitness is each organism's own cumulative successful divides (R_0);
+ newborns contribute 0 until their first divide (parental tallies are not used).
+
+ Parameters:
+ genome filename (string, default "champion.org")
+ data filename (string, default "champion.dat")
+*/
+class cActionPrintChampionGenotype : public cAction
+{
+private:
+  cString m_genome_filename;
+  cString m_data_filename;
+  double m_best_fitness;
+
+public:
+  cActionPrintChampionGenotype(cWorld* world, const cString& args, Feedback&)
+    : cAction(world, args)
+    , m_genome_filename("champion.org")
+    , m_data_filename("champion.dat")
+    , m_best_fitness(-1.0)
+  {
+    cString largs(args);
+    largs.Trim();
+    if (largs.GetSize()) m_genome_filename = largs.PopWord();
+    if (largs.GetSize()) m_data_filename = largs.PopWord();
+  }
+
+  static const cString GetDescription() { return "Arguments: [string genome_fname=\"champion.org\"] [string data_fname=\"champion.dat\"]"; }
+
+  void Process(cAvidaContext& ctx)
+  {
+    // Always pick the highest-fitness LIVE organism. Previously, under
+    // FITNESS_METHOD=3 we also scanned every genotype the systematics arbiter
+    // had ever seen (including extinct lineages) and replaced best_org with
+    // NULL whenever one of them had a higher historical max_fitness. That
+    // produced a champion.dat full of -1 sentinel rows and a champion.org
+    // dumped from a phantom genotype with no live position, which is exactly
+    // why TestCPU replay reports Fitness=0 / Offspring=NONE for a "champion"
+    // that was supposedly accumulating fitness in the live run.
+    //
+    // Picking the live org also makes the movement diagnostic below
+    // (Easterly / Northerly / |E|+|N|) meaningful: it answers "did the
+    // best individual actually move?" directly from the run, separately
+    // from whatever TestCPU does with the genome.
+    cPopulation& pop = m_world->GetPopulation();
+    const Apto::Array<cOrganism*, Apto::Smart>& live_orgs = pop.GetLiveOrgList();
+    cOrganism* best_org = NULL;
+    double best_fitness = m_best_fitness;
+
+    for (int i = 0; i < live_orgs.GetSize(); i++) {
+      cOrganism* org = live_orgs[i];
+      if (org == NULL || org->IsDead()) continue;
+
+      // FITNESS_METHOD 3: rank by this organism's own R_0 tally only (same as
+      // cPopulation aggregate stats). Juveniles stay at 0 until they reproduce.
+      const double cur_fitness = org->GetPhenotype().GetFitness();
+      if (cur_fitness > best_fitness) {
+        best_fitness = cur_fitness;
+        best_org = org;
+      }
+    }
+
+    if (best_org == NULL) return;
+
+    m_best_fitness = best_fitness;
+    Systematics::GroupPtr genotype = best_org->SystematicsGroup("genotype");
+    const int genotype_id = genotype ? genotype->ID() : -1;
+    const cString genotype_name = genotype ? genotype->Properties().Get("name").StringValue() : cString("");
+
+    // Resolve the champion's decoupled environment-grid position so the
+    // user can correlate fitness with where the org is actually living.
+    // GetCellID() = population-grid slot (life-cycle slot, no food access).
+    // env_cell_id  = the cell on the resource/environment grid the org
+    //                actually tastes food at; differs from the pop slot
+    //                whenever cPopulationCell::SetOrgEnvCellID has been
+    //                called (InjectOutsideGradient, OFFSPRING_WORLD_POS=1,
+    //                successful `move`).
+    const int pop_cell_id = best_org->GetCellID();
+    const int env_cell_id = (pop_cell_id >= 0) ? pop.MapPopCellToEnvCell(pop_cell_id) : -1;
+    const int env_w = pop.GetEnvWorldX();
+    const int env_x = (env_cell_id >= 0 && env_w > 0) ? (env_cell_id % env_w) : -1;
+    const int env_y = (env_cell_id >= 0 && env_w > 0) ? (env_cell_id / env_w) : -1;
+
+    // m_easterly / m_northerly are signed step counters incremented by
+    // cOrganism::Move on every successful move (decoupled or legacy).
+    // |E|+|N| is the Manhattan displacement from birth: a strict lower
+    // bound on the number of moves executed in this organism's lifetime.
+    // 0 means the org has never had a successful move call.
+    const int easterly = best_org->GetEasterly();
+    const int northerly = best_org->GetNortherly();
+    const int step_disp = std::abs(easterly) + std::abs(northerly);
+
+    Avida::Output::FilePtr df = Avida::Output::File::StaticWithPath(m_world->GetNewWorld(), (const char*)m_data_filename);
+    df->WriteComment("Avida Champion Data");
+    df->WriteComment("A champion is recorded only when a new all-time highest LIVE organism fitness is observed.");
+    df->WriteComment("EnvCellID/EnvX/EnvY are the org's decoupled environment-grid position (food access).");
+    df->WriteComment("Easterly/Northerly are signed step counters; StepDisp=|E|+|N| is a lower bound on moves performed.");
+    df->WriteTimeStamp();
+    df->Write(m_world->GetStats().GetUpdate(), "Update");
+    df->Write(best_fitness, "Champion Fitness");
+    const cPhenotype& phenotype = best_org->GetPhenotype();
+    df->Write(best_org->GetID(), "Organism ID");
+    df->Write(pop_cell_id, "Pop Cell ID");
+    df->Write(env_cell_id, "Env Cell ID");
+    df->Write(env_x, "Env X");
+    df->Write(env_y, "Env Y");
+    df->Write(easterly, "Easterly");
+    df->Write(northerly, "Northerly");
+    df->Write(step_disp, "StepDisp");
+    df->Write(phenotype.GetGeneration(), "Generation");
+    df->Write(phenotype.GetAge(), "Age");
+    df->Write(phenotype.GetNumDivides(), "Num Divides");
+    df->Write(phenotype.GetMerit().GetDouble(), "Merit");
+    df->Write(phenotype.GetGestationTime(), "Gestation Time");
+    df->Write(genotype_id, "Genotype ID");
+    df->Write(genotype_name, "Genotype Name");
+    df->Endl();
+
+    cTestCPU* testcpu = m_world->GetHardwareManager().CreateTestCPU(ctx);
+    testcpu->PrintGenome(ctx, best_org->GetGenome(), m_genome_filename, m_world->GetStats().GetUpdate());
+    delete testcpu;
+  }
+};
+
+/*
+ Write the all-time highest lifetime reproductive output (R0) individual.
+
+ This is the chemotaxis / repro-semel champion: the organism that produced the
+ most offspring over its lifetime. The population records this at reproduction
+ time, before a semelparous parent is removed from the live population.
+
+ Parameters:
+ genome filename (string, default "lifetime_champion.org")
+ data filename (string, default "lifetime_champion.dat")
+*/
+class cActionPrintLifetimeFitnessChampion : public cAction
+{
+private:
+  cString m_genome_filename;
+  cString m_data_filename;
+  double m_best_fitness;
+
+public:
+  cActionPrintLifetimeFitnessChampion(cWorld* world, const cString& args, Feedback&)
+    : cAction(world, args)
+    , m_genome_filename("lifetime_champion.org")
+    , m_data_filename("lifetime_champion.dat")
+    , m_best_fitness(-1.0)
+  {
+    cString largs(args);
+    largs.Trim();
+    if (largs.GetSize()) m_genome_filename = largs.PopWord();
+    if (largs.GetSize()) m_data_filename = largs.PopWord();
+  }
+
+  static const cString GetDescription() { return "Arguments: [string genome_fname=\"lifetime_champion.org\"] [string data_fname=\"lifetime_champion.dat\"]"; }
+
+  void Process(cAvidaContext& ctx)
+  {
+    cPopulation& pop = m_world->GetPopulation();
+    const cPopulation::LifetimeFitnessChampion& rec = pop.GetLifetimeFitnessChampion();
+    if (!rec.valid || rec.fitness <= m_best_fitness) return;
+
+    m_best_fitness = rec.fitness;
+    const int step_disp = std::abs(rec.easterly) + std::abs(rec.northerly);
+
+    Avida::Output::FilePtr df = Avida::Output::File::StaticWithPath(m_world->GetNewWorld(), (const char*)m_data_filename);
+    df->WriteComment("Avida Lifetime Fitness Champion Data");
+    df->WriteComment("A record is written when an individual achieves a new all-time highest lifetime reproductive output (R0).");
+    df->WriteComment("For repro-semel, the parent is recorded during reproduction before it dies.");
+    df->WriteComment("EnvCellID/EnvX/EnvY are the org's decoupled environment-grid position (food access).");
+    df->WriteComment("Easterly/Northerly are signed step counters; StepDisp=|E|+|N| is a lower bound on moves performed.");
+    df->WriteTimeStamp();
+    df->Write(rec.update, "Update");
+    df->Write(rec.fitness, "Lifetime Fitness");
+    df->Write(rec.org_id, "Organism ID");
+    df->Write(rec.pop_cell_id, "Pop Cell ID");
+    df->Write(rec.env_cell_id, "Env Cell ID");
+    df->Write(rec.env_x, "Env X");
+    df->Write(rec.env_y, "Env Y");
+    df->Write(rec.easterly, "Easterly");
+    df->Write(rec.northerly, "Northerly");
+    df->Write(step_disp, "StepDisp");
+    df->Write(rec.generation, "Generation");
+    df->Write(rec.age, "Age");
+    df->Write(rec.num_divides, "Num Divides");
+    df->Write(rec.stored_energy, "Stored Energy");
+    df->Write(rec.merit, "Merit");
+    df->Write(rec.gestation_time, "Gestation Time");
+    df->Write(rec.genotype_id, "Genotype ID");
+    df->Write(rec.genotype_name, "Genotype Name");
+    df->Endl();
+
+    cTestCPU* testcpu = m_world->GetHardwareManager().CreateTestCPU(ctx);
+    testcpu->PrintGenome(ctx, rec.genome, m_genome_filename, rec.update);
+    delete testcpu;
+  }
+};
+
 class cActionPrintDominantGroupGenotypes : public cAction
 {
 private:
@@ -3732,9 +3937,14 @@ public:
     Avida::Output::FilePtr df = Avida::Output::File::CreateWithPath(m_world->GetNewWorld(), (const char*)filename);
     ofstream& fp = df->OFStream();
     
-    for (int j = 0; j < m_world->GetPopulation().GetWorldY(); j++) {
-      for (int i = 0; i < m_world->GetPopulation().GetWorldX(); i++) {
-        const Apto::Array<double> res_count = m_world->GetPopulation().GetCellResources(j * m_world->GetPopulation().GetWorldX() + i, ctx);
+    cPopulation& pop = m_world->GetPopulation();
+    cResourceCount& resource_count = pop.GetResourceCount();
+    const int grid_x = pop.GetEnvWorldX();
+    const int grid_y = pop.GetEnvWorldY();
+
+    for (int j = 0; j < grid_y; j++) {
+      for (int i = 0; i < grid_x; i++) {
+        const Apto::Array<double> res_count = resource_count.GetCellResources(j * grid_x + i, ctx);
         double max_resource = 0.0;    
         // get the resource library
         const cResourceLib& resource_lib = m_world->GetEnvironment().GetResourceLib();
@@ -4699,35 +4909,60 @@ class cActionPrintOrgLocData : public cAction
 {
 private:
   cString m_filename;
+  bool m_use_env_pos;
   
 public:
-  cActionPrintOrgLocData(cWorld* world, const cString& args, Feedback&) : cAction(world, args), m_filename("")
+  cActionPrintOrgLocData(cWorld* world, const cString& args, Feedback&) : cAction(world, args), m_filename(""), m_use_env_pos(false)
   {
-    /*Print organism locations + other org data (for movies). */
+    /*Print organism locations + other org data (for movies).
+      Optional mode "env" prints the organism's decoupled environment-grid
+      position instead of its population-grid slot. */
     cString largs(args);
-    if (largs.GetSize()) m_filename = largs.PopWord();  
+    if (largs.GetSize()) {
+      cString arg = largs.PopWord();
+      if (arg == "env" || arg == "ENV") m_use_env_pos = true;
+      else m_filename = arg;
+    }
+    if (largs.GetSize()) {
+      cString arg = largs.PopWord();
+      if (arg == "env" || arg == "ENV") m_use_env_pos = true;
+    }
   }
-  static const cString GetDescription() { return "Arguments: [string fname='']"; }
+  static const cString GetDescription() { return "Arguments: [string fname=''] [string mode='cell'|'env']"; }
   void Process(cAvidaContext& ctx)
   {
+    (void)ctx;
     cString filename(m_filename);
     if (filename == "") filename.Set("grid_dumps/org_loc.%d.dat", m_world->GetStats().GetUpdate());
     Avida::Output::FilePtr df = Avida::Output::File::CreateWithPath(m_world->GetNewWorld(), (const char*)filename);
     ofstream& fp = df->OFStream();
     
     bool use_av = m_world->GetConfig().USE_AVATARS.Get();
-    if (!use_av) fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing" << endl;
-    else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing" << endl;
+    if (!use_av) {
+      if (m_use_env_pos) fp << "# org_id,org_envx,org_envy,org_forage_target,org_group_id,org_facing" << endl;
+      else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing" << endl;
+    }
+    else {
+      if (m_use_env_pos) fp << "# org_id,org_envx,org_envy,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing" << endl;
+      else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing" << endl;
+    }
     
-    const int worldx = m_world->GetConfig().WORLD_X.Get();
+    cPopulation& pop = m_world->GetPopulation();
+    const int worldx = pop.GetWorldX();
+    const int env_worldx = pop.GetEnvWorldX();
     
     const Apto::Array <cOrganism*, Apto::Smart> live_orgs = m_world->GetPopulation().GetLiveOrgList();
     for (int i = 0; i < live_orgs.GetSize(); i++) {  
       cOrganism* org = live_orgs[i];
       const int id = org->GetID();
       const int loc = org->GetCellID();
-      const int locx = loc % worldx;
-      const int locy = loc / worldx;
+      int locx = loc % worldx;
+      int locy = loc / worldx;
+      if (m_use_env_pos) {
+        const int env_loc = pop.MapPopCellToEnvCell(loc);
+        locx = env_loc % env_worldx;
+        locy = env_loc / env_worldx;
+      }
       const int ft = org->GetForageTarget();
       const int faced_dir = org->GetFacedDir();
       int opinion = -1;
@@ -5667,6 +5902,8 @@ void RegisterPrintActions(cActionLibrary* action_lib)
   //  action_lib->Register<cActionPrintLineageTotals>("PrintLineageTotals");
   action_lib->Register<cActionPrintLineageCounts>("PrintLineageCounts");
   action_lib->Register<cActionPrintDominantGenotype>("PrintDominantGenotype");
+  action_lib->Register<cActionPrintChampionGenotype>("PrintChampionGenotype");
+  action_lib->Register<cActionPrintLifetimeFitnessChampion>("PrintLifetimeFitnessChampion");
   action_lib->Register<cActionPrintDominantGroupGenotypes>("PrintDominantGroupGenotypes");
   action_lib->Register<cActionPrintDominantForagerGenotypes>("PrintDominantForagerGenotypes");
   action_lib->Register<cActionPrintDetailedFitnessData>("PrintDetailedFitnessData");

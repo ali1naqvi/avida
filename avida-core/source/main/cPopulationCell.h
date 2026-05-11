@@ -57,7 +57,15 @@ private:
   Apto::Array<int> m_inputs;                 // Environmental Inputs...
 
   int m_cell_id;           // Unique id for position of cell in population.
-  int m_deme_id;           // ID of the deme that this cell is part of.  
+  int m_deme_id;           // ID of the deme that this cell is part of.
+
+  // Per-organism environment-grid override. -1 means "use the default
+  // population->environment cell mapping (MapPopCellToEnvCell)". When set,
+  // this is the env-grid cell id where the *occupant* currently lives in the
+  // world when DECOUPLE_WORLD_POSITION is enabled: it decouples world position
+  // from population grid slot. Resource lookups for this cell go through this
+  // override only while decoupling is enabled.
+  int m_org_env_cell_id;
 
   struct {
     int contents;
@@ -86,7 +94,7 @@ private:
 public:
   typedef std::set<cPopulationCell*> neighborhood_type; //!< Type for cell neighborhoods.
 
-  cPopulationCell() : m_world(NULL), m_organism(NULL), m_hardware(NULL), m_mut_rates(NULL), m_migrant(false), m_can_input(false), m_can_output(false), m_hgt(0) { ; }
+  cPopulationCell() : m_world(NULL), m_organism(NULL), m_hardware(NULL), m_mut_rates(NULL), m_org_env_cell_id(-1), m_migrant(false), m_can_input(false), m_can_output(false), m_hgt(0) { ; }
   cPopulationCell(const cPopulationCell& in_cell);
   ~cPopulationCell() { delete m_mut_rates; delete m_hgt; }
 
@@ -127,6 +135,12 @@ public:
 
   inline int GetID() const { return m_cell_id; }
   inline int GetDemeID() const { return m_deme_id; }
+
+  // Per-organism env-grid override (decoupled world position).
+  // Returns -1 when this cell should fall back to the default pop->env mapping.
+  inline int GetOrgEnvCellID() const { return m_org_env_cell_id; }
+  inline void SetOrgEnvCellID(int env_cell_id) { m_org_env_cell_id = env_cell_id; }
+  inline void ClearOrgEnvCellID() { m_org_env_cell_id = -1; }
   inline int GetCellData() const { return m_cell_data.contents; }
   inline int GetCellDataOrgID() const { return m_cell_data.org_id; }
   inline int GetCellDataUpdate() const { return m_cell_data.update; }

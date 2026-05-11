@@ -933,6 +933,13 @@ bool cOrganism::ActivateDivide(cAvidaContext& ctx, cContextPhenotype* context_ph
   return m_interface->Divide(ctx, this, m_offspring_genome);
 }
 
+bool cOrganism::ActivateDivideSemel(cAvidaContext& ctx, int num_offspring)
+{
+  assert(m_interface);
+  DoOutput(ctx, true);
+  return m_interface->DivideSemel(ctx, this, m_offspring_genome, num_offspring);
+}
+
 
 void cOrganism::Fault(int fault_loc, int fault_type, cString fault_desc)
 {
@@ -1097,9 +1104,42 @@ bool cOrganism::Move(cAvidaContext& ctx)
   int destcellID = GetFacedCellID();
   
   int facing = GetFacedDir();
-  
-  // Actually perform the move
-  if (m_interface->Move(ctx, fromcellID, destcellID)) {
+
+  // Decoupled world position: if this organism's pop cell carries a per-org
+  // env-grid override, `move` updates ONLY that override and leaves the pop
+  // grid slot alone. Population cells are just life-cycle slots; the world
+  // (env-grid) position is what determines food access. One `move` step =
+  // one env-grid cell in the current facing direction (blocked at env edges).
+  const int decoup = m_interface->TryMoveDecoupled(ctx, facing);
+  if (decoup == 2) {
+    // Env boundary: do not fake a successful step (position unchanged).
+    return false;
+  }
+  if (decoup == 1) {
+    if (m_world->GetConfig().STEP_COUNTING_ERROR.Get() == 0 ||
+        ctx.GetRandom().GetInt(0, 101) > m_world->GetConfig().STEP_COUNTING_ERROR.Get()) {
+      if (facing == 0) m_northerly = m_northerly - 1;       // N
+      else if (facing == 1) {                               // NE
+        m_northerly = m_northerly - 1;
+        m_easterly = m_easterly + 1;
+      }
+      else if (facing == 2) m_easterly = m_easterly + 1;    // E
+      else if (facing == 3) {                               // SE
+        m_northerly = m_northerly + 1;
+        m_easterly = m_easterly + 1;
+      }
+      else if (facing == 4) m_northerly = m_northerly + 1;  // S
+      else if (facing == 5) {                               // SW
+        m_northerly = m_northerly + 1;
+        m_easterly = m_easterly - 1;
+      }
+      else if (facing == 6) m_easterly = m_easterly - 1;    // W
+      else if (facing == 7) {                               // NW
+        m_northerly = m_northerly - 1;
+        m_easterly = m_easterly - 1;
+      }
+    }
+  } else if (m_interface->Move(ctx, fromcellID, destcellID)) {
     //Keep track of successful movement E/W and N/S in support of get-easterly and get-northerly for navigation
     //Skip counting if random < chance of miscounting a step.
     if (m_world->GetConfig().STEP_COUNTING_ERROR.Get()==0 || ctx.GetRandom().GetInt(0,101) > m_world->GetConfig().STEP_COUNTING_ERROR.Get()) {

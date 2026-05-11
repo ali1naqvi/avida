@@ -90,7 +90,8 @@ public:
   virtual void SetPrevTaskCellID(int in_id) = 0;
 
   virtual bool Divide(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome) = 0;
-  
+  virtual bool DivideSemel(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome, int num_offspring) = 0;
+
   virtual cOrganism* GetNeighbor() = 0;
   virtual bool IsNeighborCellOccupied() = 0;
   virtual int GetNumNeighbors() = 0;
@@ -166,6 +167,14 @@ public:
   virtual void ReceiveHGTDonation(const InstructionSequence& fragment) = 0;
   
   virtual bool Move(cAvidaContext& ctx, int src_id, int dest_id) = 0;
+
+  // Decoupled-world-position move. When enabled and the organism's pop cell carries an
+  // env-grid override (set by InjectOutsideGradient or a previous successful
+  // decoupled step), advance the override by one env cell in `facing`.
+  // Return: 0 = no override (caller uses regular pop-cell Move());
+  //         1 = moved one env cell;
+  //         2 = override active but step blocked by env boundary (pos unchanged).
+  virtual int TryMoveDecoupled(cAvidaContext& ctx, int facing) { (void)ctx; (void)facing; return 0; }
 
   virtual void AddLiveOrg() = 0;
   virtual void RemoveLiveOrg() = 0;

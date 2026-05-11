@@ -77,6 +77,17 @@
 #include <cmath>
 #include <climits>
 #include <limits>
+#include <sstream>
+
+namespace {
+  bool IsBoundedGridBoundaryCell(int cell_id, int world_x, int world_y)
+  {
+    if (cell_id < 0 || world_x <= 0 || world_y <= 0) return false;
+    const int dest_x = cell_id % world_x;
+    const int dest_y = cell_id / world_x;
+    return dest_x == 0 || dest_y == 0 || dest_x == world_x - 1 || dest_y == world_y - 1;
+  }
+}
 
 using namespace std;
 using namespace AvidaTools;
@@ -85,6 +96,307 @@ static const PropertyID s_prop_id_instset("instset");
 
 
 cPopulationOrgStatProvider::~cPopulationOrgStatProvider() { ; }
+
+static int PickRandomCellFromPool(cAvidaContext& ctx, std::vector<int>& cells, int& used)
+{
+  const int size = static_cast<int>(cells.size());
+  if (size == 0) return -1;
+
+  if (used < size) {
+    const int j = used + ctx.GetRandom().GetInt(size - used);
+    std::swap(cells[used], cells[j]);
+    return cells[used++];
+  }
+
+  return cells[ctx.GetRandom().GetInt(size)];
+}
+
+static std::string SharedGradientWorldCellKey(int mode, int distance, const cString& res_name, int bucket)
+{
+  std::ostringstream key;
+  key << mode << ':' << distance << ':' << bucket << ':' << (const char*)res_name;
+  return key.str();
+}
+
+
+// Build the list of env-grid cells that sit OUTSIDE every
+// GRADIENT_RESOURCE's *food disc* by at least `margin` env-grid cells.
+//
+// A GRADIENT_RESOURCE is non-zero only within Euclidean distance `spread`
+// of its peak (see cGradientCount.cc: `if (m_spread >= thisdist) ...`).
+// Thus the actual food-bearing region is a *disc* of radius `spread`
+// around the peak -- not the bbox `min_x..max_x` x `min_y..max_y`, which
+// only constrains *where the peak is allowed to wander*.
+//
+// We therefore reject (ex, ey) if its Euclidean distance to the closest
+// point of the peak's allowed bbox is <= `spread + margin`. This means:
+//   - "outside the gradient"  <=>  cell tastes zero food right now and
+//     cannot taste food no matter where the peak wanders within its bbox;
+//   - `margin`                <=>  extra buffer of empty cells between the
+//     food disc and the cell, the chemotaxis runway.
+//
+// Used by both InjectOutsideGradient (for founders) and ActivateOffspring
+// (for OFFSPRING_WORLD_POS=1) so they share exactly one definition of
+// "outside the gradient with a margin".
+void cPopulation::BuildEnvCellsOutsideGradient(int margin, const cString& res_name, std::vector<int>& out_cells) const
+{
+  if (env_world_x <= 0 || env_world_y <= 0) return;
+  if (margin < 0) margin = 0;
+
+  struct PeakBox { int min_x, max_x, min_y, max_y; double exclusion_r; };
+  std::vector<PeakBox> peaks;
+
+  const cResourceLib& resource_lib = m_world->GetEnvironment().GetResourceLib();
+  for (int r = 0; r < resource_lib.GetSize(); r++) {
+    cResource* res = resource_lib.GetResource(r);
+    if (!res || !res->GetGradient()) continue;
+    if (res_name.GetSize() > 0 && res->GetName() != res_name) continue;
+    int bmin_x = res->GetMinX();
+    int bmax_x = res->GetMaxX();
+    int bmin_y = res->GetMinY();
+    int bmax_y = res->GetMaxY();
+    const int peakx = res->GetPeakX();
+    const int peaky = res->GetPeakY();
+    const int spread = res->GetSpread();
+    // Without a peak-movement bbox, treat the current peak as a 1x1 box so
+    // distance-to-box collapses to distance-to-peak.
+    if (bmin_x == 0 && bmax_x == 0 && bmin_y == 0 && bmax_y == 0) {
+      if (peakx < 0 || peaky < 0) continue;
+      bmin_x = bmax_x = peakx;
+      bmin_y = bmax_y = peaky;
+    }
+    // Union with the current peak in case it has drifted slightly out of
+    // bbox; harmless if it's already inside.
+    if (peakx >= 0) { if (peakx < bmin_x) bmin_x = peakx; if (peakx > bmax_x) bmax_x = peakx; }
+    if (peaky >= 0) { if (peaky < bmin_y) bmin_y = peaky; if (peaky > bmax_y) bmax_y = peaky; }
+    PeakBox pb = { bmin_x, bmax_x, bmin_y, bmax_y,
+                   static_cast<double>((spread > 0 ? spread : 0) + margin) };
+    peaks.push_back(pb);
+  }
+
+  // Walk the env grid once and keep cells far from every gradient.
+  // Worst case O(env_world_x * env_world_y) per inject/birth event, which is
+  // fine for typical grids (e.g. 100x100 = 10k cells). If this becomes hot,
+  // we can cache the eligible-cell list while peaks don't move.
+  out_cells.reserve(out_cells.size() + static_cast<size_t>(env_world_x * env_world_y));
+  for (int ey = 0; ey < env_world_y; ey++) {
+    for (int ex = 0; ex < env_world_x; ex++) {
+      bool too_close = false;
+      for (size_t b = 0; b < peaks.size(); b++) {
+        const PeakBox& pb = peaks[b];
+        // Euclidean distance from cell to the closest point of the peak's
+        // allowed bbox. If the cell is inside the bbox, distance is 0.
+        int cx = ex; if (cx < pb.min_x) cx = pb.min_x; else if (cx > pb.max_x) cx = pb.max_x;
+        int cy = ey; if (cy < pb.min_y) cy = pb.min_y; else if (cy > pb.max_y) cy = pb.max_y;
+        const double dx = static_cast<double>(ex - cx);
+        const double dy = static_cast<double>(ey - cy);
+        const double dist = std::sqrt(dx * dx + dy * dy);
+        if (dist <= pb.exclusion_r) { too_close = true; break; }
+      }
+      if (!too_close) out_cells.push_back(ey * env_world_x + ex);
+    }
+  }
+}
+
+int cPopulation::PickEnvCellOutsideGradient(cAvidaContext& ctx, int margin, const cString& res_name) const
+{
+  std::vector<int> eligible;
+  BuildEnvCellsOutsideGradient(margin, res_name, eligible);
+  int used = 0;
+  return PickRandomCellFromPool(ctx, eligible, used);
+}
+
+void cPopulation::BuildEnvCellsAwayFromGradientPeak(int min_distance, const cString& res_name, std::vector<int>& out_cells) const
+{
+  if (env_world_x <= 0 || env_world_y <= 0) return;
+  if (min_distance < 0) min_distance = 0;
+
+  struct PeakBox { int min_x, max_x, min_y, max_y; double exclusion_r; };
+  std::vector<PeakBox> peaks;
+
+  const cResourceLib& resource_lib = m_world->GetEnvironment().GetResourceLib();
+  for (int r = 0; r < resource_lib.GetSize(); r++) {
+    cResource* res = resource_lib.GetResource(r);
+    if (!res || !res->GetGradient()) continue;
+    if (res_name.GetSize() > 0 && res->GetName() != res_name) continue;
+    int bmin_x = res->GetMinX();
+    int bmax_x = res->GetMaxX();
+    int bmin_y = res->GetMinY();
+    int bmax_y = res->GetMaxY();
+    const int peakx = res->GetPeakX();
+    const int peaky = res->GetPeakY();
+    if (bmin_x == 0 && bmax_x == 0 && bmin_y == 0 && bmax_y == 0) {
+      if (peakx < 0 || peaky < 0) continue;
+      bmin_x = bmax_x = peakx;
+      bmin_y = bmax_y = peaky;
+    }
+    if (peakx >= 0) { if (peakx < bmin_x) bmin_x = peakx; if (peakx > bmax_x) bmax_x = peakx; }
+    if (peaky >= 0) { if (peaky < bmin_y) bmin_y = peaky; if (peaky > bmax_y) bmax_y = peaky; }
+    PeakBox pb = { bmin_x, bmax_x, bmin_y, bmax_y, static_cast<double>(min_distance) };
+    peaks.push_back(pb);
+  }
+
+  out_cells.reserve(out_cells.size() + static_cast<size_t>(env_world_x * env_world_y));
+  for (int ey = 0; ey < env_world_y; ey++) {
+    for (int ex = 0; ex < env_world_x; ex++) {
+      bool too_close = false;
+      for (size_t b = 0; b < peaks.size(); b++) {
+        const PeakBox& pb = peaks[b];
+        int cx = ex; if (cx < pb.min_x) cx = pb.min_x; else if (cx > pb.max_x) cx = pb.max_x;
+        int cy = ey; if (cy < pb.min_y) cy = pb.min_y; else if (cy > pb.max_y) cy = pb.max_y;
+        const double dx = static_cast<double>(ex - cx);
+        const double dy = static_cast<double>(ey - cy);
+        const double dist = std::sqrt(dx * dx + dy * dy);
+        if (dist < pb.exclusion_r) { too_close = true; break; }
+      }
+      if (!too_close) out_cells.push_back(ey * env_world_x + ex);
+    }
+  }
+}
+
+int cPopulation::PickEnvCellAwayFromGradientPeak(cAvidaContext& ctx, int min_distance, const cString& res_name) const
+{
+  std::vector<int> eligible;
+  BuildEnvCellsAwayFromGradientPeak(min_distance, res_name, eligible);
+  int used = 0;
+  return PickRandomCellFromPool(ctx, eligible, used);
+}
+
+int cPopulation::PickGradientWorldCell(cAvidaContext& ctx, int mode, int distance, const cString& res_name,
+                                       int generation, std::vector<int>& eligible_cells, int& used)
+{
+  if (eligible_cells.empty()) return -1;
+
+  const int shared_interval = m_world->GetConfig().OFFSPRING_WORLD_POS_SHARED_INTERVAL.Get();
+  if (shared_interval <= 0) return PickRandomCellFromPool(ctx, eligible_cells, used);
+
+  if (generation < 0) generation = 0;
+  const int bucket = generation / shared_interval;
+  const std::string key = SharedGradientWorldCellKey(mode, distance, res_name, bucket);
+  std::map<std::string, int>::const_iterator it = m_shared_gradient_world_cells.find(key);
+  if (it != m_shared_gradient_world_cells.end()) return it->second;
+
+  const int picked = PickRandomCellFromPool(ctx, eligible_cells, used);
+  if (picked >= 0) m_shared_gradient_world_cells[key] = picked;
+  return picked;
+}
+
+void cPopulation::ResetOrganismWorldPositionsAfterGradientReset(cAvidaContext& ctx, const cString& res_name)
+{
+  int policy = m_world->GetConfig().GRADIENT_RESET_ORG_POS.Get();
+  if (policy <= 0) return;
+
+  if (!DecoupledWorldPositionsEnabled()) {
+    ctx.Driver().Feedback().Warning("GRADIENT_RESET_ORG_POS requested but DECOUPLE_WORLD_POSITION is disabled; existing organisms were not relocated.");
+    return;
+  }
+
+  if (policy > 2) {
+    ctx.Driver().Feedback().Warning("GRADIENT_RESET_ORG_POS value is not recognized; using mode 2.");
+    policy = 2;
+  }
+
+  int margin = m_world->GetConfig().OFFSPRING_WORLD_POS_MARGIN.Get();
+  if (margin < 0) margin = 0;
+
+  const int reset_start_mode = m_world->GetConfig().OFFSPRING_WORLD_POS.Get();
+  const char* reset_start_desc = "outside the gradient food disc";
+
+  std::vector<int> eligible_env_cells;
+  if (reset_start_mode == 2) {
+    BuildEnvCellsAwayFromGradientPeak(margin, res_name, eligible_env_cells);
+    reset_start_desc = "away from the gradient peak region";
+  } else {
+    if (reset_start_mode != 0 && reset_start_mode != 1) {
+      ctx.Driver().Feedback().Warning("GRADIENT_RESET_ORG_POS uses OFFSPRING_WORLD_POS to choose reset-start cells; unrecognized OFFSPRING_WORLD_POS value, using outside-gradient placement.");
+    }
+    BuildEnvCellsOutsideGradient(margin, res_name, eligible_env_cells);
+
+    if (eligible_env_cells.empty()) {
+      std::vector<int> fallback_env_cells;
+      BuildEnvCellsAwayFromGradientPeak(margin, res_name, fallback_env_cells);
+      if (!fallback_env_cells.empty()) {
+        ctx.Driver().Feedback().Warning("GRADIENT_RESET_ORG_POS found no outside-gradient env cells; falling back to away-from-peak reset placement.");
+        eligible_env_cells.swap(fallback_env_cells);
+        reset_start_desc = "away from the gradient peak region";
+      }
+    }
+  }
+
+  if (eligible_env_cells.empty()) {
+    ctx.Driver().Feedback().Warning("GRADIENT_RESET_ORG_POS found no eligible reset-start env cells; existing organisms were not relocated.");
+    return;
+  }
+
+  std::vector<int> eligible_lookup(eligible_env_cells);
+  std::sort(eligible_lookup.begin(), eligible_lookup.end());
+
+  int used = 0;
+  int relocated = 0;
+  int shared_env_cell = -1;
+  const int shared_interval = m_world->GetConfig().OFFSPRING_WORLD_POS_SHARED_INTERVAL.Get();
+  if (shared_interval > 0) {
+    const int generation_bucket = static_cast<int>(m_world->GetStats().GetGeneration());
+    shared_env_cell = PickGradientWorldCell(ctx, reset_start_mode, margin, res_name,
+                                            generation_bucket, eligible_env_cells, used);
+  }
+  for (int i = 0; i < live_org_list.GetSize(); i++) {
+    cOrganism* org = live_org_list[i];
+    if (org == NULL || org->IsDead()) continue;
+
+    const int cell_id = org->GetCellID();
+    if (cell_id < 0 || cell_id >= cell_array.GetSize()) continue;
+
+    const int org_env_override = cell_array[cell_id].GetOrgEnvCellID();
+    const int current_env = (org_env_override >= 0) ? org_env_override : MapPopCellToEnvCell(cell_id);
+    const bool already_outside = std::binary_search(eligible_lookup.begin(), eligible_lookup.end(), current_env);
+    if (policy == 1 && already_outside) continue;
+
+    const int new_env = (shared_env_cell >= 0) ? shared_env_cell : PickRandomCellFromPool(ctx, eligible_env_cells, used);
+    if (new_env < 0) continue;
+
+    cell_array[cell_id].SetOrgEnvCellID(new_env);
+    relocated++;
+  }
+
+  if (relocated > 0 && m_world->GetVerbosity() >= VERBOSE_ON) {
+    cout << "Gradient reset relocated " << relocated
+         << " organism world position(s) " << reset_start_desc
+         << " for " << (const char*)res_name
+         << " with margin=" << margin << "." << endl;
+  }
+}
+
+void cPopulation::ConsiderLifetimeFitnessChampion(cOrganism* organism, double fitness)
+{
+  if (organism == NULL || fitness < 0.0) return;
+  if (m_lifetime_fitness_champion.valid && fitness <= m_lifetime_fitness_champion.fitness) return;
+
+  LifetimeFitnessChampion& rec = m_lifetime_fitness_champion;
+  rec.valid = true;
+  rec.update = m_world->GetStats().GetUpdate();
+  rec.fitness = fitness;
+  rec.org_id = organism->GetID();
+  rec.pop_cell_id = organism->GetCellID();
+  rec.env_cell_id = (rec.pop_cell_id >= 0) ? MapPopCellToEnvCell(rec.pop_cell_id) : -1;
+  rec.env_x = (rec.env_cell_id >= 0 && env_world_x > 0) ? (rec.env_cell_id % env_world_x) : -1;
+  rec.env_y = (rec.env_cell_id >= 0 && env_world_x > 0) ? (rec.env_cell_id / env_world_x) : -1;
+  rec.easterly = organism->GetEasterly();
+  rec.northerly = organism->GetNortherly();
+
+  const cPhenotype& phenotype = organism->GetPhenotype();
+  rec.generation = phenotype.GetGeneration();
+  rec.age = phenotype.GetAge();
+  rec.num_divides = phenotype.GetNumDivides();
+  rec.stored_energy = phenotype.GetStoredEnergy();
+  rec.merit = phenotype.GetMerit().GetDouble();
+  rec.gestation_time = phenotype.GetGestationTime();
+
+  Systematics::GroupPtr genotype = organism->SystematicsGroup("genotype");
+  rec.genotype_id = genotype ? genotype->ID() : -1;
+  rec.genotype_name = genotype ? genotype->Properties().Get("name").StringValue() : cString("");
+  rec.genome = organism->GetGenome();
+}
 
 
 class InstructionExecCountsProvider : public cPopulationOrgStatProvider
@@ -104,10 +416,10 @@ public:
       m_is_exe_inst_map[Apto::String((const char*)hwm.GetInstSet(i).GetInstSetName())].Resize(hwm.GetInstSet(i).GetSize());
     }
   }
-  
+
   Data::ConstDataSetPtr Provides() const { return m_provides; }
   void UpdateProvidedValues(Update current_update) { (void)current_update; }
-  
+
   Apto::String DescribeProvidedValue(const Apto::String& data_id) const
   {
     Apto::String rtn;
@@ -116,7 +428,7 @@ public:
     }
     return rtn;
   }
-  
+
   void SetActiveArguments(const Data::DataID& data_id, Data::ConstArgumentSetPtr args) { (void)data_id; (void)args; }
   
   Data::ConstArgumentSetPtr GetValidArguments(const Data::DataID& data_id) const
@@ -134,7 +446,7 @@ public:
   {
     return GetValidArguments(data_id)->Has(arg);
   }
-  
+
 
   Data::PackagePtr GetProvidedValueForArgument(const Data::DataID& data_id, const Data::Argument& arg) const
   {
@@ -147,7 +459,7 @@ public:
     
     return pkg;
   }
-  
+
   
   void UpdateReset()
   {
@@ -156,7 +468,7 @@ public:
       for (int i = 0; i < inst_counts.GetSize(); i++) inst_counts[i].Clear();
     }
   }
-  
+
   void HandleOrganism(cOrganism* organism)
   {
     Apto::String inst_set = organism->GetGenome().Properties().Get(s_prop_id_instset).StringValue();
@@ -280,9 +592,14 @@ cPopulation::cPopulation(cWorld* world)
 , num_top_pred_organisms(0)
 , sync_events(false)
 , m_hgt_resid(-1)
+, m_gen_lock_current_gen(0)
 {
   world_x = world->GetConfig().WORLD_X.Get();
   world_y = world->GetConfig().WORLD_Y.Get();
+  env_world_x = world->GetConfig().ENV_WORLD_X.Get();
+  env_world_y = world->GetConfig().ENV_WORLD_Y.Get();
+  if (env_world_x <= 0) env_world_x = world_x;
+  if (env_world_y <= 0) env_world_y = world_y;
   
   
   // Validate settings
@@ -417,7 +734,11 @@ void cPopulation::SetupCellGrid()
   
   cResourceCount tmp_res_count(resource_lib.GetSize() - num_deme_res);
   resource_count = tmp_res_count;
-  resource_count.ResizeSpatialGrids(world_x, world_y);
+  resource_count.ResizeSpatialGrids(env_world_x, env_world_y);
+  if ((env_world_x != world_x || env_world_y != world_y) && m_world->GetVerbosity() >= VERBOSE_ON) {
+    cout << "Environment grid is " << env_world_x << "x" << env_world_y
+         << " (population grid is " << world_x << "x" << world_y << ")." << endl;
+  }
   
   for(int i = 0; i < GetNumDemes(); i++) {
     cResourceCount tmp_deme_res_count(num_deme_res);
@@ -658,6 +979,9 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
   ConstInstructionSequencePtr seq;
   seq.DynamicCastFrom(parent_organism->GetGenome().Representation());
   parent_phenotype.DivideReset(*seq);
+  if (m_world->GetConfig().FITNESS_METHOD.Get() == 3) {
+    ConsiderLifetimeFitnessChampion(parent_organism, parent_phenotype.GetFitness());
+  }
   
   GeneticRepresentationPtr tmpHostGenome;
   
@@ -677,6 +1001,26 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
   const int parent_id = parent_organism->GetOrgInterface().GetCellID();
   assert(parent_id >= 0 && parent_id < cell_array.GetSize());
   cPopulationCell& parent_cell = cell_array[parent_id];
+
+  // Capture parent's decoupled world position (env-grid override) BEFORE the
+  // parent is destroyed (e.g. by repro-semel) so we can either (a) hand it to
+  // each offspring as their starting world position [OFFSPRING_WORLD_POS=0],
+  // (b) re-randomize them outside the zero-food gradient disc [OFFSPRING_WORLD_POS=1],
+  // or (c) re-randomize them away from the peak while still in the gradient [2].
+  // OFFSPRING_WORLD_POS_SHARED_INTERVAL controls whether those re-randomized
+  // positions are unique per individual (0) or shared by generation bucket (>0).
+  // -1 means the parent had no override (legacy: world position == pop slot),
+  // in which case we leave offspring cells with no override either.
+  const int parent_env_override = DecoupledWorldPositionsEnabled() ? parent_cell.GetOrgEnvCellID() : -1;
+  const int offspring_world_policy = m_world->GetConfig().OFFSPRING_WORLD_POS.Get();
+  const int offspring_world_margin = m_world->GetConfig().OFFSPRING_WORLD_POS_MARGIN.Get();
+  std::vector<int> outside_env_cells;
+  int outside_env_cells_used = 0;
+  if (parent_env_override >= 0 && offspring_world_policy == 1) {
+    BuildEnvCellsOutsideGradient(offspring_world_margin, cString(""), outside_env_cells);
+  } else if (parent_env_override >= 0 && offspring_world_policy == 2) {
+    BuildEnvCellsAwayFromGradientPeak(offspring_world_margin, cString(""), outside_env_cells);
+  }
   
   // If this is multi-process Avida, test to see if we should send the offspring
   // to a different world.  We check this here so that 1) we avoid all the extra
@@ -711,6 +1055,12 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
 
   for (int i = 0; i < offspring_array.GetSize(); i++) {
     target_cells[i] = PositionOffspring(parent_cell, ctx, m_world->GetConfig().ALLOW_PARENT.Get()).GetID(); 
+    if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 2 &&
+        m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 &&
+        IsBoundedGridBoundaryCell(target_cells[i], world_x, world_y)) {
+      target_cells[i] = -1;
+      continue;
+    }
     // Catch the corner case where birth method = 3 and there are 
     // no empty cells. Here, we set the cell to -1 so that the rest of the
     // method can proceed, but we can avoid trying to rotate it.
@@ -905,7 +1255,7 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
   
   // If we're not about to kill the parent, do some extra work on it.
   if (parent_alive == true) {
-    if (parent_phenotype.GetMerit().GetDouble() <= 0.0 || m_world->GetConfig().BIRTH_METHOD.Get() == 13) {
+    if (parent_phenotype.GetMerit().GetDouble() <= 0.0 || m_world->GetConfig().BIRTH_METHOD.Get() == POSITION_OFFSPRING_BEHAVIORAL_KILL_BOTH) {
       // no weakling parents either!
       parent_organism->GetPhenotype().SetToDie();
       parent_alive = false;
@@ -933,7 +1283,9 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
           if (pc_phenotype & 4) {  // If we must update the last instruction counts
             parent_phenotype.SetTestCPUInstCount(test_info.GetTestPhenotype().GetLastInstCount());
           }
-          parent_phenotype.SetFitness(parent_phenotype.GetMerit().CalcFitness(parent_phenotype.GetGestationTime())); // Update fitness
+          if (m_world->GetConfig().FITNESS_METHOD.Get() != 3) {
+            parent_phenotype.SetFitness(parent_phenotype.GetMerit().CalcFitness(parent_phenotype.GetGestationTime())); // Update fitness
+          }
           delete test_cpu;
         }
       }
@@ -942,7 +1294,8 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
       if (!is_doomed) {
         // In a local run, face the offspring toward the parent.
         const int birth_method = m_world->GetConfig().BIRTH_METHOD.Get();
-        if (birth_method < NUM_LOCAL_POSITION_OFFSPRING || birth_method == POSITION_OFFSPRING_PARENT_FACING) {
+        if (birth_method < NUM_LOCAL_POSITION_OFFSPRING || birth_method == POSITION_OFFSPRING_PARENT_FACING
+            || birth_method == POSITION_OFFSPRING_GLOBAL_EMPTY) {
           for (int i = 0; i < offspring_array.GetSize(); i++) {
             if (target_cells[i] != -1) {
               GetCell(target_cells[i]).Rotate(parent_cell);
@@ -964,7 +1317,28 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
           || (m_world->GetConfig().EPIGENETIC_METHOD.Get() == EPIGENETIC_METHOD_BOTH) ) {
         offspring_array[i]->GetHardware().InheritState(parent_organism->GetHardware());
       }
-      bool org_survived = ActivateOrganism(ctx, offspring_array[i], GetCell(target_cells[i]));
+
+      // Decoupled world position: when the parent had a per-organism env
+      // override, pass one into activation so it is installed after the target
+      // cell is cleared. Setting it directly on the target cell here would be
+      // wiped by ActivateOrganism -> KillOrganism -> RemoveOrganism.
+      int offspring_env_override = -1;
+      if (parent_env_override >= 0) {
+        if (offspring_world_policy == 1 || offspring_world_policy == 2) {
+          const int child_generation = offspring_array[i]->GetPhenotype().GetGeneration();
+          int new_env = PickGradientWorldCell(ctx, offspring_world_policy, offspring_world_margin,
+                                              cString(""), child_generation,
+                                              outside_env_cells, outside_env_cells_used);
+          if (new_env < 0) new_env = parent_env_override; // fallback
+          offspring_env_override = new_env;
+        } else {
+          // Inherit parent's current world position.
+          offspring_env_override = parent_env_override;
+        }
+      }
+
+      bool org_survived = ActivateOrganism(ctx, offspring_array[i], GetCell(target_cells[i]),
+                                           true, false, offspring_env_override);
       // only assign an avatar cell if the org lived through birth and it isn't the parent
       if (m_world->GetConfig().USE_AVATARS.Get() && org_survived) {
         int avatar_target_cell = PlaceAvatar(ctx, parent_organism);
@@ -988,6 +1362,254 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
   if (m_world->GetConfig().DIVIDE_METHOD.Get() == DIVIDE_METHOD_SPLIT && parent_alive && m_world->GetConfig().RESET_INPUTS_ON_DIVIDE.Get()) TestForMiniTrace(parent_organism);
   return parent_alive;
 }
+
+
+bool cPopulation::ActivateSemelOffspring(cAvidaContext& ctx, const Genome& offspring_genome,
+                                         cOrganism* parent_organism, int num_offspring)
+{
+  assert(parent_organism != NULL);
+  if (num_offspring < 1) return true;
+
+  cPhenotype& parent_phenotype = parent_organism->GetPhenotype();
+  ConstInstructionSequencePtr offspring_seq;
+  offspring_seq.DynamicCastFrom(offspring_genome.Representation());
+  const int offspring_genome_size = !offspring_seq ? 0 : offspring_seq->GetSize();
+
+  // Collect total parent energy before any resets
+  double total_energy = 0.0;
+  if (m_world->GetConfig().ENERGY_ENABLED.Get()) {
+    parent_phenotype.RefreshEnergy();
+    parent_phenotype.ApplyToEnergyStore();
+    total_energy = parent_phenotype.GetStoredEnergy();
+  }
+
+  // Energy-scaled semelparity (viable-propagule model).
+  // If SEMEL_ENERGY_PER_OFFSPRING > 0, fecundity scales with parent energy.
+  // The configured packet is a lower bound, but a child born exactly at
+  // MIN_ENERGY_TO_REPRODUCE cannot pay even one maintenance step before falling
+  // below the reproduction gate. Reserve one genome-length pass of flat
+  // instruction cost so non-overlapping offspring can actually complete a
+  // lifetime and still attempt reproduction if they found no extra energy.
+  double energy_per_offspring_override = -1.0;  // <0 => use legacy even-split
+  if (m_world->GetConfig().ENERGY_ENABLED.Get()) {
+    const double per_off = m_world->GetConfig().SEMEL_ENERGY_PER_OFFSPRING.Get();
+    if (per_off > 0.0) {
+      double offspring_energy = per_off;
+      const double min_repro_energy = m_world->GetConfig().MIN_ENERGY_TO_REPRODUCE.Get();
+      const double flat_cost = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
+      if (min_repro_energy > 0.0 && flat_cost > 0.0 && offspring_genome_size > 0) {
+        offspring_energy = std::max(offspring_energy,
+                                    min_repro_energy + flat_cost * offspring_genome_size);
+      }
+
+      const double birth_bonus = m_world->GetConfig().ENERGY_GIVEN_AT_BIRTH.Get();
+      if (birth_bonus > 0.0) offspring_energy += birth_bonus;
+
+      int scaled_n = static_cast<int>(total_energy / offspring_energy);  // floor
+      const int min_n = m_world->GetConfig().SEMEL_MIN_OFFSPRING.Get();
+      const int max_n = m_world->GetConfig().SEMEL_MAX_OFFSPRING.Get();
+      if (scaled_n < min_n) {
+        if (m_world->GetConfig().SEMEL_INSUFFICIENT_ENERGY_DIES.Get()) {
+          parent_organism->GetPhenotype().SetToDie();
+          return false;  // parent dead (same convention as successful semel end)
+        }
+        return true;  // parent alive, no DivideReset
+      }
+      if (max_n > 0 && scaled_n > max_n) scaled_n = max_n;
+      num_offspring = scaled_n;
+      energy_per_offspring_override = offspring_energy;
+    }
+  }
+
+  UpdateQs(parent_organism, true);
+
+  ConstInstructionSequencePtr parent_seq;
+  parent_seq.DynamicCastFrom(parent_organism->GetGenome().Representation());
+
+  parent_phenotype.DivideReset(*parent_seq);
+
+  const int parent_id = parent_organism->GetOrgInterface().GetCellID();
+  assert(parent_id >= 0 && parent_id < cell_array.GetSize());
+  cPopulationCell& parent_cell = cell_array[parent_id];
+  const int parent_env_override = DecoupledWorldPositionsEnabled() ? parent_cell.GetOrgEnvCellID() : -1;
+  const int offspring_world_policy = m_world->GetConfig().OFFSPRING_WORLD_POS.Get();
+  const int offspring_world_margin = m_world->GetConfig().OFFSPRING_WORLD_POS_MARGIN.Get();
+  std::vector<int> outside_env_cells;
+  int outside_env_cells_used = 0;
+  if (parent_env_override >= 0 && offspring_world_policy == 1) {
+    BuildEnvCellsOutsideGradient(offspring_world_margin, cString(""), outside_env_cells);
+  } else if (parent_env_override >= 0 && offspring_world_policy == 2) {
+    BuildEnvCellsAwayFromGradientPeak(offspring_world_margin, cString(""), outside_env_cells);
+  }
+
+  double energy_per_offspring =
+      (energy_per_offspring_override > 0.0) ? energy_per_offspring_override
+    : ((num_offspring > 0) ? (total_energy / num_offspring) : 0.0);
+
+  // Honor ENERGY_GIVEN_AT_BIRTH in the legacy even-split semel path. The
+  // energy-scaled path above already includes the bonus in its child packet.
+  const double birth_bonus = m_world->GetConfig().ENERGY_GIVEN_AT_BIRTH.Get();
+  if (energy_per_offspring_override <= 0.0 && birth_bonus > 0.0) {
+    energy_per_offspring += birth_bonus;
+  }
+
+  // Build the offspring genome with parent's hardware type & properties
+  GeneticRepresentationPtr offspring_rep(new InstructionSequence(offspring_genome.Representation()->AsString()));
+  Genome child_genome(parent_organism->GetGenome().HardwareType(),
+                      parent_organism->GetGenome().Properties(), offspring_rep);
+
+  Apto::Array<cOrganism*> offspring_array(num_offspring);
+  Apto::Array<cMerit> merit_array(num_offspring);
+
+  for (int i = 0; i < num_offspring; i++) {
+    offspring_array[i] = new cOrganism(m_world, ctx, child_genome,
+                                       parent_phenotype.GetGeneration(),
+                                       Systematics::Source(Systematics::DIVISION, ""));
+
+    if (m_world->GetConfig().ENERGY_ENABLED.Get()) {
+      cPhenotype& child_phen = offspring_array[i]->GetPhenotype();
+      child_phen.SetEnergy(energy_per_offspring);
+      merit_array[i] = child_phen.ConvertEnergyToMerit(child_phen.GetStoredEnergy());
+      if (merit_array[i].GetDouble() <= 0.0) {
+        delete offspring_array[i];
+        offspring_array[i] = NULL;
+        continue;
+      }
+    } else {
+      if (m_world->GetConfig().INHERIT_MERIT.Get()) {
+        merit_array[i] = parent_phenotype.GetMerit();
+      } else {
+        merit_array[i] = parent_phenotype.CalcSizeMerit();
+      }
+    }
+
+    Systematics::ConstParentGroupsPtr pgrps(new Systematics::ConstParentGroups(1));
+    (*pgrps)[0] = parent_organism->SystematicsGroupMembership();
+    offspring_array[i]->SelfClassify(pgrps);
+  }
+
+  // Choose target cells and configure each offspring
+  Apto::Array<int> target_cells(num_offspring);
+  std::vector<int> global_empty_targets;
+  int global_empty_targets_used = 0;
+  if (m_world->GetConfig().BIRTH_METHOD.Get() == POSITION_OFFSPRING_GLOBAL_EMPTY) {
+    global_empty_targets.reserve(cell_array.GetSize());
+    for (int cell_id = 0; cell_id < cell_array.GetSize(); cell_id++) {
+      if (!cell_array[cell_id].IsOccupied() &&
+          !(m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 2 &&
+            m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 &&
+            IsBoundedGridBoundaryCell(cell_id, world_x, world_y))) {
+        global_empty_targets.push_back(cell_id);
+      }
+    }
+  }
+
+  for (int i = 0; i < num_offspring; i++) {
+    if (offspring_array[i] == NULL) {
+      target_cells[i] = -1;
+      continue;
+    }
+
+    if (m_world->GetConfig().BIRTH_METHOD.Get() == POSITION_OFFSPRING_GLOBAL_EMPTY) {
+      if (global_empty_targets_used < static_cast<int>(global_empty_targets.size())) {
+        target_cells[i] = PickRandomCellFromPool(ctx, global_empty_targets, global_empty_targets_used);
+      } else {
+        target_cells[i] = -1;
+      }
+    } else {
+      target_cells[i] = PositionOffspring(parent_cell, ctx, m_world->GetConfig().ALLOW_PARENT.Get()).GetID();
+    }
+    if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 2 &&
+        m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 &&
+        IsBoundedGridBoundaryCell(target_cells[i], world_x, world_y)) {
+      target_cells[i] = -1;
+    }
+    if (target_cells[i] == -1) continue;
+
+    const int mut_source = m_world->GetConfig().MUT_RATE_SOURCE.Get();
+    if (mut_source == 1) {
+      offspring_array[i]->MutationRates().Copy(GetCell(target_cells[i]).MutationRates());
+    } else {
+      offspring_array[i]->MutationRates().Copy(parent_organism->MutationRates());
+      if (offspring_array[i]->MutationRates().GetMetaCopyMutProb() > 0.0) {
+        offspring_array[i]->MutationRates().DoMetaCopyMut(ctx);
+      }
+    }
+
+    ConstInstructionSequencePtr seq;
+    seq.DynamicCastFrom(offspring_array[i]->GetGenome().Representation());
+    const InstructionSequence& genome = *seq;
+    offspring_array[i]->GetPhenotype().SetupOffspring(parent_phenotype, genome);
+    offspring_array[i]->GetPhenotype().SetMerit(merit_array[i]);
+    offspring_array[i]->SetLineageLabel(parent_organism->GetLineageLabel());
+    offspring_array[i]->SetCCladeLabel(parent_organism->GetCCladeLabel());
+
+    if (m_world->GetConfig().INHERIT_REPUTATION.Get() == 1) {
+      offspring_array[i]->SetReputation(parent_organism->GetReputation());
+    }
+
+    if (parent_organism->IsTeacher()) offspring_array[i]->SetParentTeacher(true);
+    offspring_array[i]->SetParentFT(parent_organism->GetForageTarget());
+    offspring_array[i]->SetParentMerit(parent_organism->GetPhenotype().GetMerit().GetDouble());
+    offspring_array[i]->SetParentMultiThreaded(parent_organism->GetPhenotype().IsMultiThread());
+
+    if (m_world->GetConfig().USE_FORM_GROUPS.Get() && parent_organism->HasOpinion()) {
+      offspring_array[i]->SetParentGroup(parent_organism->GetOpinion().first);
+      if (m_world->GetConfig().INHERIT_OPINION.Get()) {
+        int group = parent_organism->GetOpinion().first;
+        offspring_array[i]->SetOpinion(group);
+        JoinGroup(offspring_array[i], group);
+      }
+    }
+
+  }
+
+  int semel_birth_count = 0;
+  for (int i = 0; i < num_offspring; i++) {
+    if (offspring_array[i] != NULL && target_cells[i] != -1) semel_birth_count++;
+  }
+
+  // FITNESS_METHOD 3 is lifetime reproductive output. A semel parent dies
+  // immediately after this brood, so its final score must be the number of
+  // offspring that actually received valid target cells, not just "one divide".
+  if (m_world->GetConfig().FITNESS_METHOD.Get() == 3) {
+    parent_phenotype.SetFitness(static_cast<double>(semel_birth_count));
+    parent_phenotype.SetLifeFitness(static_cast<double>(semel_birth_count));
+    parent_phenotype.SetNumDivides(semel_birth_count);
+    ConsiderLifetimeFitnessChampion(parent_organism, static_cast<double>(semel_birth_count));
+  }
+
+  parent_organism->HandleGestation();
+
+  // Place offspring
+  for (int i = 0; i < num_offspring; i++) {
+    if (offspring_array[i] == NULL) continue;
+    if (target_cells[i] != -1) {
+      int offspring_env_override = -1;
+      if (parent_env_override >= 0) {
+        if (offspring_world_policy == 1 || offspring_world_policy == 2) {
+          const int child_generation = offspring_array[i]->GetPhenotype().GetGeneration();
+          int new_env = PickGradientWorldCell(ctx, offspring_world_policy, offspring_world_margin,
+                                              cString(""), child_generation,
+                                              outside_env_cells, outside_env_cells_used);
+          if (new_env < 0) new_env = parent_env_override;
+          offspring_env_override = new_env;
+        } else {
+          offspring_env_override = parent_env_override;
+        }
+      }
+      ActivateOrganism(ctx, offspring_array[i], GetCell(target_cells[i]),
+                       true, false, offspring_env_override);
+    } else {
+      delete offspring_array[i];
+    }
+  }
+
+  // Semelparous: parent always dies
+  parent_organism->GetPhenotype().SetToDie();
+  return false;
+}
+
 
 void cPopulation::UpdateQs(cOrganism* org, bool reproduced)
 {
@@ -1350,7 +1972,8 @@ bool cPopulation::ActivateParasite(cOrganism* host, Systematics::UnitPtr parent,
   return true;
 }
 
-bool cPopulation::ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, cPopulationCell& target_cell, bool assign_group, bool is_inject)
+bool cPopulation::ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, cPopulationCell& target_cell,
+                                   bool assign_group, bool is_inject, int org_env_cell_id)
 {
   assert(in_organism != NULL);
   
@@ -1358,6 +1981,7 @@ bool cPopulation::ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, c
   
   // Update the contents of the target cell.
   KillOrganism(target_cell, ctx); 
+  if (DecoupledWorldPositionsEnabled() && org_env_cell_id >= 0) target_cell.SetOrgEnvCellID(org_env_cell_id);
   target_cell.InsertOrganism(in_organism, ctx); 
   AddLiveOrg(in_organism); 
   
@@ -1379,7 +2003,9 @@ bool cPopulation::ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, c
       in_organism->GetPhenotype().SetMerit(test_info.GetTestPhenotype().GetMerit());
     if (pc_phenotype & 2)
       in_organism->GetPhenotype().SetGestationTime(test_info.GetTestPhenotype().GetGestationTime());
-    in_organism->GetPhenotype().SetFitness(in_organism->GetPhenotype().GetMerit().CalcFitness(in_organism->GetPhenotype().GetGestationTime()));
+    if (m_world->GetConfig().FITNESS_METHOD.Get() != 3) {
+      in_organism->GetPhenotype().SetFitness(in_organism->GetPhenotype().GetMerit().CalcFitness(in_organism->GetPhenotype().GetGestationTime()));
+    }
     delete test_cpu;
   }
   // Update the archive...
@@ -1495,15 +2121,14 @@ bool cPopulation::ActivateOrganism(cAvidaContext& ctx, cOrganism* in_organism, c
   }
   // Kill org born on deadly world boundaries
   if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 1 && m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 && target_cell.GetID() >= 0) {
-    int dest_x = target_cell.GetID() % m_world->GetConfig().WORLD_X.Get();  
-    int dest_y = target_cell.GetID() / m_world->GetConfig().WORLD_X.Get();
-    if (dest_x == 0 || dest_y == 0 || dest_x == m_world->GetConfig().WORLD_X.Get() - 1 || dest_y == m_world->GetConfig().WORLD_Y.Get() - 1) {
+    if (IsBoundedGridBoundaryCell(target_cell.GetID(), world_x, world_y)) {
       KillOrganism(target_cell, ctx);
       org_survived = false;
     }
   } 
   // don't kill our test org, just it's offspring
-  if ((m_world->GetConfig().BIRTH_METHOD.Get() == 12 || m_world->GetConfig().BIRTH_METHOD.Get() == 13) && !is_inject) {
+  if ((m_world->GetConfig().BIRTH_METHOD.Get() == POSITION_OFFSPRING_BEHAVIORAL_KILL_OFFSPRING
+        || m_world->GetConfig().BIRTH_METHOD.Get() == POSITION_OFFSPRING_BEHAVIORAL_KILL_BOTH) && !is_inject) {
       KillOrganism(target_cell, ctx); 
       org_survived = false; 
   }
@@ -1987,18 +2612,12 @@ bool cPopulation::MoveOrganisms(cAvidaContext& ctx, int src_cell_id, int dest_ce
   cPopulationCell& src_cell = GetCell(src_cell_id);
   cPopulationCell& dest_cell = GetCell(dest_cell_id);
   
-  const int dest_x = dest_cell_id % m_world->GetConfig().WORLD_X.Get();  
-  const int dest_y = dest_cell_id / m_world->GetConfig().WORLD_X.Get();
-  
   // check for boundary effects on movement
-  if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 1 && m_world->GetConfig().WORLD_GEOMETRY.Get() == 1) {
+  if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() > 0 && m_world->GetConfig().WORLD_GEOMETRY.Get() == 1) {
     // Fail if we're running in the test CPU.
     if (src_cell_id < 0) return false;
-    bool faced_is_boundary = false;
-    if (dest_x == 0 || dest_y == 0 || 
-        dest_x == m_world->GetConfig().WORLD_X.Get() - 1 || 
-        dest_y == m_world->GetConfig().WORLD_Y.Get() - 1) faced_is_boundary = true;
-    if (faced_is_boundary) {
+    if (IsBoundedGridBoundaryCell(dest_cell_id, world_x, world_y)) {
+      if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 2) return false;
       if (true_cell != -1) KillOrganism(GetCell(true_cell), ctx);
       else if (true_cell == -1) KillOrganism(src_cell, ctx);
       return false;
@@ -2257,7 +2876,14 @@ void cPopulation::KillOrganism(cPopulationCell& in_cell, cAvidaContext& ctx)
   // Statistics...
   cOrganism* organism = in_cell.GetOrganism();
   m_world->GetStats().RecordDeath();
-  
+  {
+    const cPhenotype& phen = organism->GetPhenotype();
+    const double terminal_fit = (m_world->GetConfig().FITNESS_METHOD.Get() == 3)
+      ? phen.GetFitness()
+      : phen.GetLifeFitness();
+    m_world->GetStats().RecordDeathFitnessTerminal(terminal_fit);
+  }
+
   // orgs killed during birth wont have avatars
   if (m_world->GetConfig().USE_AVATARS.Get() && organism->GetOrgInterface().GetAVCellID() != -1) {
     organism->GetOrgInterface().RemoveAllAV();
@@ -5359,6 +5985,12 @@ cPopulationCell& cPopulation::PositionOffspring(cPopulationCell& parent_cell, cA
     return PositionDemeMigration(parent_cell, parent_ok);
   }
   
+  if (birth_method == POSITION_OFFSPRING_GLOBAL_EMPTY) {
+    int cell_id = FindRandEmptyCell(ctx);
+    if (cell_id == -1) return parent_cell;
+    return GetCell(cell_id);
+  }
+
   // This block should be changed to a switch statment with functions handling
   // the cases. For now, a bunch of if's that return if they handle.
   
@@ -5777,11 +6409,17 @@ void cPopulation::ProcessStep(cAvidaContext& ctx, double step_size, int cell_id)
   if (cell_id < 0) return;
   
   cPopulationCell& cell = GetCell(cell_id);
-  assert(cell.IsOccupied()); // Unoccupied cell getting processor time!
+  if (!cell.IsOccupied()) return;
   cOrganism* cur_org = cell.GetOrganism();
   
+  if (m_world->GetConfig().GENERATION_LOCK.Get() &&
+      cur_org->GetPhenotype().GetGeneration() > m_gen_lock_current_gen) {
+    return;
+  }
+
   cell.GetHardware()->SingleProcess(ctx);
   
+  if (!cell.IsOccupied()) return;
   double merit = cur_org->GetPhenotype().GetMerit().GetDouble();
   if (cur_org->GetPhenotype().GetToDelete() == true) {
     cur_org->GetHardware().DeleteMiniTrace(print_mini_trace_reacs);
@@ -5814,10 +6452,14 @@ void cPopulation::ProcessStepSpeculative(cAvidaContext& ctx, double step_size, i
   if (cell_id < 0) return;
   
   cPopulationCell& cell = GetCell(cell_id);
-  assert(cell.IsOccupied()); // Unoccupied cell getting processor time!
+  if (!cell.IsOccupied()) return;
   
   cOrganism* cur_org = cell.GetOrganism();
   cHardwareBase* hw = cell.GetHardware();
+  if (m_world->GetConfig().GENERATION_LOCK.Get() &&
+      cur_org->GetPhenotype().GetGeneration() > m_gen_lock_current_gen) {
+    return;
+  }
   
   if (cell.GetSpeculativeState()) {
     // We have already executed this instruction, just decrement the counter
@@ -5828,6 +6470,7 @@ void cPopulation::ProcessStepSpeculative(cAvidaContext& ctx, double step_size, i
       // Speculatively execute additional instructions
       int spec_count = 0;
       while (spec_count < 32) {
+        if (!cell.IsOccupied()) break;
         if (hw->SingleProcess(ctx, true)) spec_count++;
         else break;
       }
@@ -5836,6 +6479,12 @@ void cPopulation::ProcessStepSpeculative(cAvidaContext& ctx, double step_size, i
     }
   }
   
+  if (!cell.IsOccupied()) {
+    m_world->GetStats().IncExecuted();
+    resource_count.Update(step_size);
+    return;
+  }
+
   // Deme specific
   if (GetNumDemes() > 1) {
     for(int i = 0; i < GetNumDemes(); i++) GetDeme(i).Update(step_size);
@@ -5919,6 +6568,8 @@ void cPopulation::UpdateOrganismStats(cAvidaContext& ctx)
   
   cStats& stats = m_world->GetStats();
   
+  stats.FinalizeDeathFitnessSnapshot();
+
   // Clear out organism sums...
   stats.SumFitness().Clear();
   stats.SumGestation().Clear();
@@ -5968,6 +6619,9 @@ void cPopulation::UpdateOrganismStats(cAvidaContext& ctx)
     
     const cPhenotype& phenotype = organism->GetPhenotype();
     const cMerit cur_merit = phenotype.GetMerit();
+    // FITNESS_METHOD 3: fitness is this organism's own cumulative successful divides
+    // (R_0 tally). Newborns start at 0; we do not substitute parent's fitness via
+    // last_fitness so means/maxes reflect each individual's lifetime progress only.
     const double cur_fitness = phenotype.GetFitness();
     const int cur_gestation_time = phenotype.GetGestationTime();
     const int cur_genome_length = phenotype.GetGenomeLength();
@@ -6308,6 +6962,22 @@ void cPopulation::ProcessPostUpdate(cAvidaContext& ctx)
   cStats& stats = m_world->GetStats();
   
   stats.SetNumCreatures(GetNumOrganisms());
+
+  if (m_world->GetConfig().GENERATION_LOCK.Get() && GetNumOrganisms() > 0) {
+    int min_gen = INT_MAX;
+    for (int i = 0; i < cell_array.GetSize(); i++) {
+      if (cell_array[i].IsOccupied()) {
+        int gen = cell_array[i].GetOrganism()->GetPhenotype().GetGeneration();
+        if (gen < min_gen) min_gen = gen;
+      }
+    }
+    if (min_gen > m_gen_lock_current_gen) {
+      m_gen_lock_current_gen = min_gen;
+      if (m_world->GetVerbosity() >= VERBOSE_ON) {
+        cout << "Generation lock advanced to generation " << m_gen_lock_current_gen << endl;
+      }
+    }
+  }
   
   UpdateDemeStats(ctx); 
   UpdateOrganismStats(ctx);
@@ -7183,8 +7853,8 @@ void cPopulation::Inject(const Genome& genome, Systematics::Source src, cAvidaCo
   if(m_world->IsWorldBoundary(GetCell(cell_id))) {
     cell_id += world_x + 1;
   }
-  // Can't inject onto deadly world edges either
-  if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 1) {
+  // Can't inject onto lethal or blocked world edges either.
+  if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() > 0) {
     const int dest_x = cell_id % m_world->GetConfig().WORLD_X.Get();  
     if (dest_x == 0) cell_id += 1;
     else if (dest_x == m_world->GetConfig().WORLD_X.Get() - 1) cell_id -= 1;
@@ -7304,7 +7974,7 @@ void cPopulation::UpdateResource(cAvidaContext& ctx, int res_index, double chang
 
 void cPopulation::UpdateCellResources(cAvidaContext& ctx, const Apto::Array<double>& res_change, const int cell_id)
 {
-  resource_count.ModifyCell(ctx, res_change, cell_id);
+  resource_count.ModifyCell(ctx, res_change, MapPopCellToEnvCell(cell_id));
 }
 
 void cPopulation::UpdateDemeCellResources(cAvidaContext& ctx, const Apto::Array<double>& res_change, const int cell_id)
@@ -8396,6 +9066,7 @@ void cPopulation::UpdateGradientCount(cAvidaContext& ctx, const int verbosity, c
     if (!res->GetDemeResource()) global_res_index++;
     
     if (res->GetName() == res_name) {
+      ClearSharedGradientWorldCellCache();
       resource_count.SetGradientCount(ctx, world, global_res_index, res->GetPeakX(), res->GetPeakY(),
                            res->GetHeight(), res->GetSpread(), res->GetPlateau(), res->GetDecay(), 
                            res->GetMaxX(), res->GetMinX(), res->GetMaxY(), res->GetMinY(), res->GetAscaler(), res->GetUpdateStep(),
@@ -8405,6 +9076,7 @@ void cPopulation::UpdateGradientCount(cAvidaContext& ctx, const int verbosity, c
                            res->GetGradientInflow(), res->GetIsPlateauCommon(), res->GetFloor(), res->GetHabitat(), 
                            res->GetMinSize(), res->GetMaxSize(), res->GetConfig(), res->GetCount(), res->GetResistance(), res->GetDamage(),
                            res->GetDeathOdds(), res->IsPath(), res->IsHammer(), res->GetInitialPlatVal(), res->GetThreshold(), res->GetRefuge());
+      ResetOrganismWorldPositionsAfterGradientReset(ctx, res_name);
     } 
   }
 }
@@ -9459,7 +10131,7 @@ int cPopulation::PlaceAvatar(cAvidaContext& ctx, cOrganism* parent)
       break;
   }
   
-  if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() == 1 && m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 && avatar_target_cell >= 0) {
+  if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() > 0 && m_world->GetConfig().WORLD_GEOMETRY.Get() == 1 && avatar_target_cell >= 0) {
     int dest_x = avatar_target_cell % m_world->GetConfig().WORLD_X.Get();
     int dest_y = avatar_target_cell / m_world->GetConfig().WORLD_X.Get();
     if (dest_x == 0 || dest_y == 0 || dest_x == m_world->GetConfig().WORLD_X.Get() - 1 || dest_y == m_world->GetConfig().WORLD_Y.Get() - 1) {

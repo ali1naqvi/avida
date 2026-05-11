@@ -243,6 +243,13 @@ bool cPopulationInterface::Divide(cAvidaContext& ctx, cOrganism* parent, const G
   return m_world->GetPopulation().ActivateOffspring(ctx, offspring_genome, parent);
 }
 
+bool cPopulationInterface::DivideSemel(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome, int num_offspring)
+{
+  assert(parent != NULL);
+  assert(m_world->GetPopulation().GetCell(m_cell_id).GetOrganism() == parent);
+  return m_world->GetPopulation().ActivateSemelOffspring(ctx, offspring_genome, parent, num_offspring);
+}
+
 cOrganism* cPopulationInterface::GetNeighbor()
 {
   cPopulationCell& cell = m_world->GetPopulation().GetCell(m_cell_id);
@@ -345,7 +352,10 @@ const Apto::Array<int>& cPopulationInterface::GetInputs() const
 
 const Apto::Array<double>& cPopulationInterface::GetResources(cAvidaContext& ctx)
 {
-  return m_world->GetPopulation().GetCellResources(m_cell_id, ctx); 
+  // GetCellResources -> MapPopCellToEnvCell consults the cell's env override
+  // automatically when DECOUPLE_WORLD_POSITION is enabled, so this already
+  // returns the right cell when world position is decoupled from the pop slot.
+  return m_world->GetPopulation().GetCellResources(m_cell_id, ctx);
 }
 
 double cPopulationInterface::GetResourceVal(cAvidaContext& ctx, int res_id)
@@ -353,14 +363,56 @@ double cPopulationInterface::GetResourceVal(cAvidaContext& ctx, int res_id)
   return m_world->GetPopulation().GetCellResVal(ctx, m_cell_id, res_id);
 }
 
+// Helper: when this organism has a decoupled world position (env override),
+// compute the env-grid cell id reached by stepping one cell in the org's
+// current facing direction (clamped to env-grid bounds). Returns -1 if the
+// org has no env override (caller should fall back to the pop-grid faced
+// cell mapping).
+static inline int FacedEnvCellOrMinus1(int facing, int my_env, int env_w, int env_h)
+{
+  if (my_env < 0 || env_w <= 0 || env_h <= 0) return -1;
+  int ex = my_env % env_w;
+  int ey = my_env / env_w;
+  int dx = 0, dy = 0;
+  switch (facing) {
+    case 0: dy = -1; break;            // N
+    case 1: dx =  1; dy = -1; break;   // NE
+    case 2: dx =  1; break;            // E
+    case 3: dx =  1; dy =  1; break;   // SE
+    case 4: dy =  1; break;            // S
+    case 5: dx = -1; dy =  1; break;   // SW
+    case 6: dx = -1; break;            // W
+    case 7: dx = -1; dy = -1; break;   // NW
+    default: break;
+  }
+  int nx = ex + dx; int ny = ey + dy;
+  if (nx < 0) nx = 0; else if (nx >= env_w) nx = env_w - 1;
+  if (ny < 0) ny = 0; else if (ny >= env_h) ny = env_h - 1;
+  return ny * env_w + nx;
+}
+
 const Apto::Array<double>& cPopulationInterface::GetFacedCellResources(cAvidaContext& ctx)
 {
-  return m_world->GetPopulation().GetCellResources(GetCell()->GetCellFaced().GetID(), ctx); 
+  cPopulation& pop = m_world->GetPopulation();
+  const int my_env = pop.GetCell(m_cell_id).GetOrgEnvCellID();
+  if (pop.DecoupledWorldPositionsEnabled() && my_env >= 0) {
+    const int faced_env = FacedEnvCellOrMinus1(GetFacedDir(), my_env,
+                                               pop.GetEnvWorldX(), pop.GetEnvWorldY());
+    if (faced_env >= 0) return pop.GetResourceCount().GetCellResources(faced_env, ctx);
+  }
+  return pop.GetCellResources(GetCell()->GetCellFaced().GetID(), ctx);
 }
 
 double cPopulationInterface::GetFacedResourceVal(cAvidaContext& ctx, int res_id)
 {
-  return m_world->GetPopulation().GetCellResVal(ctx, GetCell()->GetCellFaced().GetID(), res_id);
+  cPopulation& pop = m_world->GetPopulation();
+  const int my_env = pop.GetCell(m_cell_id).GetOrgEnvCellID();
+  if (pop.DecoupledWorldPositionsEnabled() && my_env >= 0) {
+    const int faced_env = FacedEnvCellOrMinus1(GetFacedDir(), my_env,
+                                               pop.GetEnvWorldX(), pop.GetEnvWorldY());
+    if (faced_env >= 0) return pop.GetResourceCount().GetCellResVal(ctx, faced_env, res_id);
+  }
+  return pop.GetCellResVal(ctx, GetCell()->GetCellFaced().GetID(), res_id);
 }
 
 const Apto::Array<double>& cPopulationInterface::GetCellResources(int cell_id, cAvidaContext& ctx)
@@ -1284,6 +1336,47 @@ void cPopulationInterface::ReceiveHGTDonation(const InstructionSequence& fragmen
 bool cPopulationInterface::Move(cAvidaContext& ctx, int src_id, int dest_id)
 {
   return m_world->GetPopulation().MoveOrganisms(ctx, src_id, dest_id, -1);
+}
+
+int cPopulationInterface::TryMoveDecoupled(cAvidaContext& ctx, int facing)
+{
+  (void)ctx;
+  cPopulation& pop = m_world->GetPopulation();
+  if (!pop.DecoupledWorldPositionsEnabled()) return 0;
+  if (m_cell_id < 0 || m_cell_id >= pop.GetSize()) return 0;
+  cPopulationCell& cell = pop.GetCell(m_cell_id);
+  const int cur_env = cell.GetOrgEnvCellID();
+  if (cur_env < 0) return 0; // no override -> legacy behavior
+
+  const int env_w = pop.GetEnvWorldX();
+  const int env_h = pop.GetEnvWorldY();
+  if (env_w <= 0 || env_h <= 0) return 0;
+
+  int ex = cur_env % env_w;
+  int ey = cur_env / env_w;
+
+  // Facing convention (matches cOrganism::Move): 0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW.
+  int dx = 0, dy = 0;
+  switch (facing) {
+    case 0: dy = -1; break;
+    case 1: dx =  1; dy = -1; break;
+    case 2: dx =  1; break;
+    case 3: dx =  1; dy =  1; break;
+    case 4: dy =  1; break;
+    case 5: dx = -1; dy =  1; break;
+    case 6: dx = -1; break;
+    case 7: dx = -1; dy = -1; break;
+    default: break;
+  }
+
+  const int new_ex = ex + dx;
+  const int new_ey = ey + dy;
+  // Bounded env grid: walking off the edge does not change position (caller
+  // must treat this as a failed move — see cOrganism::Move).
+  if (new_ex < 0 || new_ex >= env_w || new_ey < 0 || new_ey >= env_h) return 2;
+
+  cell.SetOrgEnvCellID(new_ey * env_w + new_ex);
+  return 1;
 }
 
 void cPopulationInterface::AddLiveOrg()  

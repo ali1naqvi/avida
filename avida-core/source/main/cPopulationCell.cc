@@ -25,6 +25,7 @@
 #include "avida/core/Feedback.h"
 #include "cDoubleSum.h"
 #include "nHardware.h"
+#include "nGeometry.h"
 #include "cOrganism.h"
 #include "cWorld.h"
 #include "cEnvironment.h"
@@ -46,6 +47,7 @@ cPopulationCell::cPopulationCell(const cPopulationCell& in_cell)
 , m_deme_id(in_cell.m_deme_id)
 , m_cell_data(in_cell.m_cell_data)
 , m_spec_state(in_cell.m_spec_state)
+, m_org_env_cell_id(in_cell.m_org_env_cell_id)
 , m_can_input(false)
 , m_can_output(false)
 , m_hgt(0)
@@ -76,6 +78,7 @@ void cPopulationCell::operator=(const cPopulationCell& in_cell)
 		m_deme_id = in_cell.m_deme_id;
 		m_cell_data = in_cell.m_cell_data;
 		m_spec_state = in_cell.m_spec_state;
+		m_org_env_cell_id = in_cell.m_org_env_cell_id;
     m_can_input = in_cell.m_can_input;
     m_can_output = in_cell.m_can_output;
 		
@@ -112,6 +115,7 @@ void cPopulationCell::Setup(cWorld* world, int in_id, const cMutationRates& in_r
   m_cell_data.update = -1;
   m_cell_data.territory = -1;
   m_spec_state = 0;
+  m_org_env_cell_id = -1;
   
   if (m_mut_rates == NULL)
     m_mut_rates = new cMutationRates(in_rates);
@@ -121,23 +125,82 @@ void cPopulationCell::Setup(cWorld* world, int in_id, const cMutationRates& in_r
 
 void cPopulationCell::Rotate(cPopulationCell& new_facing)
 {
-  // @CAO Note, this breaks avida if new_facing is not in connection_list
-	
+  // Rotate this cell's facing so its "first" connection is the neighbor that
+  // best points toward new_facing in world coordinates.
+  //
+  // If new_facing is a direct neighbor of this cell, we face it exactly
+  // (original behavior). Otherwise — which can happen with non-local birth
+  // methods such as BIRTH_METHOD = POSITION_OFFSPRING_GLOBAL_EMPTY, where the
+  // offspring lands anywhere in the world — we pick the neighbor whose
+  // direction from this cell has the largest dot product with the vector
+  // toward new_facing. This gives the offspring a sensible facing based on
+  // the world position of the parent rather than requiring adjacency.
+
   //@AWC if this cell contains a migrant then we assume new_facing is not in the connection list and bail out ...
-  if(IsMigrant()){
+  if (IsMigrant()) {
     UnsetMigrant(); //@AWC -- unset the migrant flag for the next time this cell is used
     return;
   }
-	
-#ifdef DEBUG
-  int scan_count = 0;
-#endif
-  while (m_connections.GetFirst() != &new_facing) {
-    m_connections.CircNext();
-#ifdef DEBUG
-    assert(++scan_count < m_connections.GetSize());
-#endif
+
+  if (m_connections.GetSize() == 0) return;
+
+  // Fast path: new_facing is already a direct neighbor — rotate to it.
+  {
+    bool is_neighbor = false;
+    tConstListIterator<cPopulationCell> it(m_connections);
+    while (!it.AtEnd()) {
+      if (it.Next() == &new_facing) { is_neighbor = true; break; }
+    }
+    if (is_neighbor) {
+      while (m_connections.GetFirst() != &new_facing) m_connections.CircNext();
+      return;
+    }
   }
+
+  // Slow path: pick the neighbor that best matches the direction toward
+  // new_facing in world coordinates.
+  const int world_x = m_world->GetConfig().WORLD_X.Get();
+  const int world_y = m_world->GetConfig().WORLD_Y.Get();
+  const int geometry = m_world->GetConfig().WORLD_GEOMETRY.Get();
+  const bool toroidal = (geometry == nGeometry::TORUS);
+
+  auto short_delta = [](int a, int b, int span, bool wrap) {
+    int d = b - a;
+    if (wrap && span > 0) {
+      if (d > span / 2) d -= span;
+      else if (d < -span / 2) d += span;
+    }
+    return d;
+  };
+
+  const int goal_dx = short_delta(m_x, new_facing.m_x, world_x, toroidal);
+  const int goal_dy = short_delta(m_y, new_facing.m_y, world_y, toroidal);
+
+  // If new_facing is somehow this cell (shouldn't happen), nothing to do.
+  if (goal_dx == 0 && goal_dy == 0) return;
+
+  cPopulationCell* best = NULL;
+  double best_score = -1e300;
+  tConstListIterator<cPopulationCell> it(m_connections);
+  while (!it.AtEnd()) {
+    cPopulationCell* n = it.Next();
+    if (n == NULL) continue;
+    const int ndx = short_delta(m_x, n->m_x, world_x, toroidal);
+    const int ndy = short_delta(m_y, n->m_y, world_y, toroidal);
+    const double nlen = std::sqrt(static_cast<double>(ndx * ndx + ndy * ndy));
+    if (nlen <= 0.0) continue;
+    // Dot product with the goal vector, normalized by the neighbor offset
+    // length so each neighbor is weighted equally by direction (not distance).
+    const double score = (static_cast<double>(goal_dx) * ndx +
+                          static_cast<double>(goal_dy) * ndy) / nlen;
+    if (score > best_score) {
+      best_score = score;
+      best = n;
+    }
+  }
+
+  if (best == NULL) return;  // pathological: all neighbor offsets were zero
+  while (m_connections.GetFirst() != best) m_connections.CircNext();
 }
 
 /*! This method recursively builds a set of cells that neighbor this cell, out to 
@@ -303,6 +366,7 @@ cOrganism * cPopulationCell::RemoveOrganism(cAvidaContext& ctx)
   }
   m_organism = NULL;
   m_hardware = NULL;
+  ClearOrgEnvCellID();
   return out_organism;
 }
 

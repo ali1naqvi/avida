@@ -461,6 +461,7 @@ private:
   bool Inst_Transposon(cAvidaContext& ctx);
   bool Inst_ReproDeme(cAvidaContext& ctx);
   bool Inst_Repro(cAvidaContext& ctx);
+  bool Inst_ReproSemel(cAvidaContext& ctx);
   bool Inst_ReproSex(cAvidaContext& ctx);
   bool Inst_ReproGermFlag(cAvidaContext& ctx);
   bool Inst_TaskPutRepro(cAvidaContext& ctx);
@@ -513,6 +514,7 @@ private:
   bool Inst_SenseMult100(cAvidaContext& ctx);
   bool DoSense(cAvidaContext& ctx, int conversion_method, double base);
   bool DoSenseResourceX(int reg_to_set, int cell_id, int resid, cAvidaContext& ctx); 
+  bool DoSenseFacedResourceX(int reg_to_set, int resid, cAvidaContext& ctx);
   bool Inst_SenseResource0(cAvidaContext& ctx);
   bool Inst_SenseResource1(cAvidaContext& ctx);
   bool Inst_SenseResource2(cAvidaContext& ctx);
@@ -678,6 +680,7 @@ private:
   bool Inst_HeadDivideAsex(cAvidaContext& ctx);
   bool Inst_HeadDivideAsexWait(cAvidaContext& ctx);
   bool Inst_HeadDivideMateSelect(cAvidaContext& ctx);
+  bool Inst_DivideSemel(cAvidaContext& ctx);
 
   bool Inst_HeadDivide1(cAvidaContext& ctx);
   bool Inst_HeadDivide2(cAvidaContext& ctx);

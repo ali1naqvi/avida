@@ -120,6 +120,9 @@ void cOptionsScreen::Draw(cAvidaContext& ctx)
   case POSITION_OFFSPRING_EMPTY:
     Print(4, 55, "Place in empty only");
     break;
+  case POSITION_OFFSPRING_GLOBAL_EMPTY:
+    Print(4, 55, "Place in empty (global)");
+    break;
   }
 
   Print(5, 55, "%d", info.GetConfig().AVE_TIME_SLICE.Get());

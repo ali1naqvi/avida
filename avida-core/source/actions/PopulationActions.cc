@@ -48,6 +48,8 @@
 #include "cWorld.h"
 #include "cOrganism.h"
 #include "cEnvironment.h"
+#include "cResource.h"
+#include "cResourceLib.h"
 #include "cUserFeedback.h"
 #include "cArgSchema.h"
 
@@ -56,11 +58,24 @@
 #include <map>
 #include <limits>
 #include <numeric>
+#include <vector>
 #include <set>
 #include <utility>
-#include <vector>
 
 #include "stdlib.h"
+
+namespace {
+  bool IsBlockedBoundaryCell(cWorld* world, int cell_id, int world_x, int world_y)
+  {
+    if (cell_id < 0 || world_x <= 0 || world_y <= 0) return false;
+    if (world->GetConfig().WORLD_GEOMETRY.Get() != 1) return false;
+    if (world->GetConfig().DEADLY_BOUNDARIES.Get() <= 0) return false;
+
+    const int x = cell_id % world_x;
+    const int y = cell_id / world_x;
+    return x == 0 || y == 0 || x == world_x - 1 || y == world_y - 1;
+  }
+}
 
 using namespace Avida;
 using namespace AvidaTools;
@@ -609,6 +624,312 @@ public:
   }
 };
 
+
+/*
+ Inject `count` base organism into random population cells that lie OUTSIDE
+ region(s) of GRADIENT_RESOURCE(s) defined in environment.cfg.
+ placement is deterministic for a given seed.
+
+ The gradient bounds (min_x, max_x, min_y, max_y) are interpreted in environment-grid
+ coordinates (ENV_WORLD_X x ENV_WORLD_Y). The population grid is used only for
+ life-cycle slots; the founder's food-access/world position is sampled directly
+ from eligible environment-grid cells.
+
+ Parameters:
+   filename (string)         Genome file to inject.
+   count (int)               Number of founders to scatter.
+   resource (string="")      Restrict to a named GRADIENT_RESOURCE. Empty = use ALL gradients.
+   merit (double=-1)         Initial merit, -1 = use default.
+   lineage_label (int=0)     Lineage tag for descendants.
+   neutral_metric (double=0) Neutral drift metric.
+ */
+class cActionInjectOutsideGradient : public cAction
+{
+private:
+  cString m_filename;
+  int m_count;
+  cString m_resource_name;
+  double m_merit;
+  int m_lineage_label;
+  double m_neutral_metric;
+  int m_margin;
+
+public:
+  cActionInjectOutsideGradient(cWorld* world, const cString& args, Feedback&)
+  : cAction(world, args), m_count(0), m_resource_name(""), m_merit(-1.0), m_lineage_label(0), m_neutral_metric(0.0), m_margin(0)
+  {
+    cString largs(args);
+    if (largs.GetSize()) m_filename = largs.PopWord();
+    if (largs.GetSize()) m_count = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_margin = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_resource_name = largs.PopWord();
+    if (largs.GetSize()) m_merit = largs.PopWord().AsDouble();
+    if (largs.GetSize()) m_lineage_label = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_neutral_metric = largs.PopWord().AsDouble();
+    if (m_margin < 0) m_margin = 0;
+  }
+
+  static const cString GetDescription()
+  {
+    return "Arguments: <string fname> <int count> [int margin=0] [string resource_name=''] [double merit=-1] [int lineage_label=0] [double neutral_metric=0]";
+  }
+
+  void Process(cAvidaContext& ctx)
+  {
+    if (m_filename.GetSize() == 0) {
+      cerr << "error: InjectOutsideGradient requires an organism file" << endl;
+      return;
+    }
+    if (m_count <= 0) {
+      ctx.Driver().Feedback().Warning("InjectOutsideGradient called with count <= 0; skipping.");
+      return;
+    }
+
+    GenomePtr genome;
+    cUserFeedback feedback;
+    genome = Util::LoadGenomeDetailFile(m_filename, m_world->GetWorkingDir(), m_world->GetHardwareManager(), feedback);
+    for (int i = 0; i < feedback.GetNumMessages(); i++) {
+      switch (feedback.GetMessageType(i)) {
+        case cUserFeedback::UF_ERROR:    cerr << "error: ";   break;
+        case cUserFeedback::UF_WARNING:  cerr << "warning: "; break;
+        default: break;
+      }
+      cerr << feedback.GetMessage(i) << endl;
+    }
+    if (!genome) return;
+
+    cPopulation& pop = m_world->GetPopulation();
+    const int pop_world_x = pop.GetWorldX();
+    const int pop_world_y = pop.GetWorldY();
+    const int total_cells = pop_world_x * pop_world_y;
+
+    // Step 1: build the list of ENV-grid cells eligible for a founder's
+    // *world position*. These are env cells whose Euclidean distance to the
+    // closest point of every GRADIENT_RESOURCE peak-bbox exceeds (spread +
+    // margin). The actual food-bearing region of a gradient is a disc of
+    // radius `spread` around the peak (cGradientCount.cc:319), so this is
+    // the only correct way to define "outside the gradient": being outside
+    // the peak's allowed bbox alone is not enough -- the gradient itself
+    // extends `spread` cells past the bbox.
+    //
+    // The eligibility logic is shared with ActivateOffspring's
+    // OFFSPRING_WORLD_POS=1 path via cPopulation::BuildEnvCellsOutsideGradient,
+    // so founders and re-randomized offspring use exactly the same definition.
+    std::vector<int> outside_env_cells;
+    pop.BuildEnvCellsOutsideGradient(m_margin, m_resource_name, outside_env_cells);
+
+    if (outside_env_cells.empty()) {
+      ctx.Driver().Feedback().Warning("InjectOutsideGradient: no env cells lie outside the gradient food disc by the requested margin; nothing injected.");
+      return;
+    }
+
+    // Step 2: pick a population cell for each founder. When decoupling is on,
+    // population cells are just life-cycle slots, so any slot can host any
+    // sampled env-grid position. When decoupling is off, the population slot
+    // itself determines food access, so restrict placement to slots whose
+    // mapped env cell is outside the gradient.
+    const bool decoupled_world_pos = pop.DecoupledWorldPositionsEnabled();
+    std::vector<int> eligible_env_lookup(outside_env_cells);
+    std::sort(eligible_env_lookup.begin(), eligible_env_lookup.end());
+
+    std::vector<int> pop_cells;
+    pop_cells.reserve(total_cells);
+    for (int i = 0; i < total_cells; i++) {
+      if (IsBlockedBoundaryCell(m_world, i, pop_world_x, pop_world_y)) continue;
+      if (decoupled_world_pos ||
+          std::binary_search(eligible_env_lookup.begin(), eligible_env_lookup.end(),
+                             pop.MapPopCellToEnvCell(i))) {
+        pop_cells.push_back(i);
+      }
+    }
+    if (pop_cells.empty()) {
+      ctx.Driver().Feedback().Warning("InjectOutsideGradient: no population cells map to eligible env cells while DECOUPLE_WORLD_POSITION is disabled; nothing injected.");
+      return;
+    }
+
+    const int n_avail_pop = static_cast<int>(pop_cells.size());
+    const int n_avail_env = static_cast<int>(outside_env_cells.size());
+    const int shared_interval = m_world->GetConfig().OFFSPRING_WORLD_POS_SHARED_INTERVAL.Get();
+    const int n_inject = (decoupled_world_pos && shared_interval <= 0)
+      ? std::min(m_count, std::min(n_avail_pop, n_avail_env))
+      : std::min(m_count, n_avail_pop);
+
+    for (int i = 0; i < n_inject; i++) {
+      const int j = ctx.GetRandom().GetInt(i, n_avail_pop);
+      std::swap(pop_cells[i], pop_cells[j]);
+    }
+
+    int outside_env_cells_used = 0;
+    for (int i = 0; i < n_inject; i++) {
+      const int target_cell = pop_cells[i];
+      pop.Inject(*genome, Systematics::Source(Systematics::DIVISION, "outside-gradient", true),
+                 ctx, target_cell, m_merit, m_lineage_label, m_neutral_metric);
+
+      if (decoupled_world_pos) {
+        if (!pop.GetCell(target_cell).IsOccupied()) continue;
+        // Decouple this founder's world position from its population slot:
+        // pick an env cell uniformly at random from the outside-gradient set
+        // (with margin) and pin it to the population cell.
+        const int generation = pop.GetCell(target_cell).GetOrganism()->GetPhenotype().GetGeneration();
+        const int env_cell_id = pop.PickGradientWorldCell(ctx, 1, m_margin, m_resource_name,
+                                                          generation, outside_env_cells,
+                                                          outside_env_cells_used);
+        pop.GetCell(target_cell).SetOrgEnvCellID(env_cell_id);
+      }
+    }
+    pop.SetSyncEvents(true);
+
+    if (m_world->GetVerbosity() >= VERBOSE_ON) {
+      cout << "InjectOutsideGradient: placed " << n_inject << " founder(s); ";
+      if (decoupled_world_pos) {
+        cout << "world positions sampled from " << n_avail_env
+             << " env cells outside every gradient food disc with margin="
+             << m_margin << "." << endl;
+      } else {
+        cout << "population slots constrained to mapped env cells outside every gradient food disc with margin="
+             << m_margin << "." << endl;
+      }
+    }
+  }
+};
+
+/*
+ Inject `count` base organisms into random population cells whose decoupled
+ env-grid world positions are at least `min_distance` cells away from every
+ GRADIENT_RESOURCE peak movement bbox. This differs from InjectOutsideGradient:
+ it does not require zero food at birth, so it is appropriate for gradients that
+ cover the whole environment but still need founders to start away from the main
+ food concentration.
+
+ Args: <fname> <count> [min_distance=0] [resource_name=''] [merit=-1] [lineage_label=0] [neutral_metric=0]
+ */
+class cActionInjectAwayFromGradientPeak : public cAction
+{
+private:
+  cString m_filename;
+  int m_count;
+  cString m_resource_name;
+  double m_merit;
+  int m_lineage_label;
+  double m_neutral_metric;
+  int m_min_distance;
+
+public:
+  cActionInjectAwayFromGradientPeak(cWorld* world, const cString& args, Feedback&)
+  : cAction(world, args), m_count(0), m_resource_name(""), m_merit(-1.0), m_lineage_label(0), m_neutral_metric(0.0), m_min_distance(0)
+  {
+    cString largs(args);
+    if (largs.GetSize()) m_filename = largs.PopWord();
+    if (largs.GetSize()) m_count = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_min_distance = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_resource_name = largs.PopWord();
+    if (largs.GetSize()) m_merit = largs.PopWord().AsDouble();
+    if (largs.GetSize()) m_lineage_label = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_neutral_metric = largs.PopWord().AsDouble();
+    if (m_min_distance < 0) m_min_distance = 0;
+  }
+
+  static const cString GetDescription()
+  {
+    return "Arguments: <string fname> <int count> [int min_distance=0] [string resource_name=''] [double merit=-1] [int lineage_label=0] [double neutral_metric=0]";
+  }
+
+  void Process(cAvidaContext& ctx)
+  {
+    if (m_filename.GetSize() == 0) {
+      cerr << "error: InjectAwayFromGradientPeak requires an organism file" << endl;
+      return;
+    }
+    if (m_count <= 0) {
+      ctx.Driver().Feedback().Warning("InjectAwayFromGradientPeak called with count <= 0; skipping.");
+      return;
+    }
+
+    GenomePtr genome;
+    cUserFeedback feedback;
+    genome = Util::LoadGenomeDetailFile(m_filename, m_world->GetWorkingDir(), m_world->GetHardwareManager(), feedback);
+    for (int i = 0; i < feedback.GetNumMessages(); i++) {
+      switch (feedback.GetMessageType(i)) {
+        case cUserFeedback::UF_ERROR:    cerr << "error: ";   break;
+        case cUserFeedback::UF_WARNING:  cerr << "warning: "; break;
+        default: break;
+      }
+      cerr << feedback.GetMessage(i) << endl;
+    }
+    if (!genome) return;
+
+    cPopulation& pop = m_world->GetPopulation();
+    const int pop_world_x = pop.GetWorldX();
+    const int pop_world_y = pop.GetWorldY();
+    const int total_cells = pop_world_x * pop_world_y;
+
+    std::vector<int> eligible_env_cells;
+    pop.BuildEnvCellsAwayFromGradientPeak(m_min_distance, m_resource_name, eligible_env_cells);
+    if (eligible_env_cells.empty()) {
+      ctx.Driver().Feedback().Warning("InjectAwayFromGradientPeak: no env cells satisfy the requested minimum distance; nothing injected.");
+      return;
+    }
+
+    const bool decoupled_world_pos = pop.DecoupledWorldPositionsEnabled();
+    std::vector<int> eligible_env_lookup(eligible_env_cells);
+    std::sort(eligible_env_lookup.begin(), eligible_env_lookup.end());
+
+    std::vector<int> pop_cells;
+    pop_cells.reserve(total_cells);
+    for (int i = 0; i < total_cells; i++) {
+      if (IsBlockedBoundaryCell(m_world, i, pop_world_x, pop_world_y)) continue;
+      if (decoupled_world_pos ||
+          std::binary_search(eligible_env_lookup.begin(), eligible_env_lookup.end(),
+                             pop.MapPopCellToEnvCell(i))) {
+        pop_cells.push_back(i);
+      }
+    }
+    if (pop_cells.empty()) {
+      ctx.Driver().Feedback().Warning("InjectAwayFromGradientPeak: no population cells map to eligible env cells while DECOUPLE_WORLD_POSITION is disabled; nothing injected.");
+      return;
+    }
+
+    const int n_avail_pop = static_cast<int>(pop_cells.size());
+    const int n_avail_env = static_cast<int>(eligible_env_cells.size());
+    const int shared_interval = m_world->GetConfig().OFFSPRING_WORLD_POS_SHARED_INTERVAL.Get();
+    const int n_inject = (decoupled_world_pos && shared_interval <= 0)
+      ? std::min(m_count, std::min(n_avail_pop, n_avail_env))
+      : std::min(m_count, n_avail_pop);
+
+    for (int i = 0; i < n_inject; i++) {
+      const int j = ctx.GetRandom().GetInt(i, n_avail_pop);
+      std::swap(pop_cells[i], pop_cells[j]);
+    }
+
+    int eligible_env_cells_used = 0;
+    for (int i = 0; i < n_inject; i++) {
+      const int target_cell = pop_cells[i];
+      pop.Inject(*genome, Systematics::Source(Systematics::DIVISION, "away-from-gradient-peak", true),
+                 ctx, target_cell, m_merit, m_lineage_label, m_neutral_metric);
+      if (decoupled_world_pos) {
+        if (!pop.GetCell(target_cell).IsOccupied()) continue;
+        const int generation = pop.GetCell(target_cell).GetOrganism()->GetPhenotype().GetGeneration();
+        const int env_cell_id = pop.PickGradientWorldCell(ctx, 2, m_min_distance, m_resource_name,
+                                                          generation, eligible_env_cells,
+                                                          eligible_env_cells_used);
+        pop.GetCell(target_cell).SetOrgEnvCellID(env_cell_id);
+      }
+    }
+    pop.SetSyncEvents(true);
+
+    if (m_world->GetVerbosity() >= VERBOSE_ON) {
+      cout << "InjectAwayFromGradientPeak: placed " << n_inject << " founder(s); ";
+      if (decoupled_world_pos) {
+        cout << "world positions sampled from " << n_avail_env
+             << " env cells at least " << m_min_distance
+             << " cells from every gradient peak region." << endl;
+      } else {
+        cout << "population slots constrained to mapped env cells at least "
+             << m_min_distance << " cells from every gradient peak region." << endl;
+      }
+    }
+  }
+};
 
 /*
  Injects identical organisms into a range of cells of the population with a specified divide mut rate (per site).
@@ -6211,6 +6532,8 @@ void RegisterPopulationActions(cActionLibrary* action_lib)
   action_lib->Register<cActionInjectRange>("InjectRange");
   action_lib->Register<cActionInjectSequence>("InjectSequence");
   action_lib->Register<cActionInjectWellMixed>("InjectWellMixed");
+  action_lib->Register<cActionInjectOutsideGradient>("InjectOutsideGradient");
+  action_lib->Register<cActionInjectAwayFromGradientPeak>("InjectAwayFromGradientPeak");
   action_lib->Register<cActionInjectSequenceWithDivMutRate>("InjectSequenceWDivMutRate");
   action_lib->Register<cActionInjectDemes>("InjectDemes");
   action_lib->Register<cActionInjectModuloDemes>("InjectModuloDemes");

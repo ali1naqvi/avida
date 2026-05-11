@@ -89,6 +89,7 @@ public:
   bool GetLGTFragment(cAvidaContext& ctx, int region, const Genome& dest_genome, InstructionSequence& seq) { return false; }
 
   bool Divide(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome);
+  bool DivideSemel(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome, int num_offspring) { return false; }
   cOrganism* GetNeighbor() { return NULL; }
   bool IsNeighborCellOccupied() { return false; }
   int GetNumNeighbors() { return 0; }

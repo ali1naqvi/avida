@@ -46,7 +46,7 @@ void cMapScreen::Update(cAvidaContext& ctx)
   const int name_y = Height() - 1;
   if (info.GetMapMode() == MAP_BASIC)           Print(name_y, name_x, " Genotype View ");
   else if (info.GetMapMode() == MAP_INJECT)     Print(name_y, name_x, " Modified View ");
-  else if (info.GetMapMode() == MAP_RESOURCE)   Print(name_y, name_x, " Resource View ");
+  else if (info.GetMapMode() == MAP_RESOURCE)   Print(name_y, name_x, " Gradient View ");
   else if (info.GetMapMode() == MAP_AGE)        Print(name_y, name_x, "   Age View    ");
   else if (info.GetMapMode() == MAP_BREED_TRUE) Print(name_y, name_x, "Breed True View");
   else if (info.GetMapMode() == MAP_PARASITE)   Print(name_y, name_x, " Parasite View ");
@@ -56,6 +56,7 @@ void cMapScreen::Update(cAvidaContext& ctx)
   else if (info.GetMapMode() == MAP_MUTATIONS)  Print(name_y, name_x, " Mutation View ");
   else if (info.GetMapMode() == MAP_THREAD)     Print(name_y, name_x, "  Thread View  ");
   else if (info.GetMapMode() == MAP_LINEAGE)    Print(name_y, name_x, " Lineage View  ");
+  else if (info.GetMapMode() == MAP_ENERGY)     Print(name_y, name_x, "  Energy View  ");
 
 
   // Draw the [<] and [>] around the map mode....
@@ -356,5 +357,4 @@ void cMapScreen::Navigate(cAvidaContext& ctx)
   CenterActiveCPU();	// Set map w/ active CPU in the center
   Clear();
 }
-
 

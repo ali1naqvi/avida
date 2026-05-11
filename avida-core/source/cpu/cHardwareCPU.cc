@@ -394,6 +394,7 @@ tInstLib<cHardwareCPU::tMethod>* cHardwareCPU::initInstLib(void)
     tInstLibEntry<tMethod>("div-sex", &cHardwareCPU::Inst_HeadDivideSex, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("div-asex", &cHardwareCPU::Inst_HeadDivideAsex, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("div-asex-w", &cHardwareCPU::Inst_HeadDivideAsexWait, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
+    tInstLibEntry<tMethod>("divide-semel", &cHardwareCPU::Inst_DivideSemel, INST_CLASS_LIFECYCLE, nInstFlag::STALL, "Semelparous divide: all energy split among N offspring, parent dies."),
     tInstLibEntry<tMethod>("div-sex-MS", &cHardwareCPU::Inst_HeadDivideMateSelect, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     
     tInstLibEntry<tMethod>("h-divide1", &cHardwareCPU::Inst_HeadDivide1, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
@@ -445,6 +446,7 @@ tInstLib<cHardwareCPU::tMethod>* cHardwareCPU::initInstLib(void)
     // High-level instructions
 		tInstLibEntry<tMethod>("repro_deme", &cHardwareCPU::Inst_ReproDeme, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro", &cHardwareCPU::Inst_Repro, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
+    tInstLibEntry<tMethod>("repro-semel", &cHardwareCPU::Inst_ReproSemel, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-sex", &cHardwareCPU::Inst_ReproSex, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-germ-flag", &cHardwareCPU::Inst_ReproGermFlag, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-A", &cHardwareCPU::Inst_Repro, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
@@ -3418,16 +3420,79 @@ bool cHardwareCPU::Inst_Repro(cAvidaContext& ctx)
   }
   
   if (m_world->GetConfig().DIVIDE_METHOD.Get() == DIVIDE_METHOD_SPLIT) m_advance_ip = false;
-  
+
+  const bool energy_enabled = m_world->GetConfig().ENERGY_ENABLED.Get();
+  const double per_off = energy_enabled ? m_world->GetConfig().SEMEL_ENERGY_PER_OFFSPRING.Get() : 0.0;
+  if (energy_enabled && per_off > 0.0) {
+    m_organism->GetPhenotype().SetOffspringEnergyPacketOverride(per_off);
+  }
+
   const bool parent_alive = m_organism->ActivateDivide(ctx);
-  
+
   //Reset the parent
   if (parent_alive) {
+    // Belt-and-suspenders: a few birth paths never call ExtractParentEnergy
+    // (e.g. DoPairAsexBirth for sex with no recombination), so the override
+    // wouldn't be consumed. Clear it here so it can't leak into a later divide.
+    if (energy_enabled && per_off > 0.0) {
+      m_organism->GetPhenotype().ClearOffspringEnergyPacketOverride();
+    }
+
     if (m_world->GetConfig().DIVIDE_METHOD.Get() == DIVIDE_METHOD_SPLIT) Reset(ctx);
 
     // Clear instruction flags on successful divide
     m_memory.ClearFlags();
   }
+  return true;
+}
+
+bool cHardwareCPU::Inst_ReproSemel(cAvidaContext& ctx)
+{
+  if (m_world->GetConfig().REPRO_METHOD.Get() == 0 && m_organism->IsNeighborCellOccupied()) {
+    return false;
+  }
+
+  if (m_organism->GetPhenotype().GetCurBonus() < m_world->GetConfig().REQUIRED_BONUS.Get()) {
+    return false;
+  }
+
+  m_organism->OffspringGenome() = m_organism->GetGenome();
+  InstructionSequencePtr offspring_seq;
+  offspring_seq.DynamicCastFrom(m_organism->OffspringGenome().Representation());
+
+  ConstInstructionSequencePtr org_seq;
+  org_seq.DynamicCastFrom(m_organism->GetGenome().Representation());
+
+  Divide_DoTransposons(ctx);
+
+  if (m_organism->GetCopyMutProb() > 0) {
+    for (int i = 0; i < offspring_seq->GetSize(); i++) {
+      bool in_list = false;
+      char test_inst = (*offspring_seq)[i].GetSymbol()[0];
+      cString no_mut_list = m_world->GetConfig().NO_MUT_INSTS.Get();
+      for (int j = 0; j < (int)strlen(no_mut_list); j++) {
+        if ((char) no_mut_list[j] == test_inst) in_list = true;
+      }
+      if (m_organism->TestCopyMut(ctx) && !(in_list)) {
+        (*offspring_seq)[i] = m_inst_set->GetRandomInst(ctx);
+      }
+    }
+  }
+
+  Divide_DoMutations(ctx);
+
+  bool viable = Divide_CheckViable(ctx, org_seq->GetSize(), offspring_seq->GetSize(), 1);
+  if (!viable) { return false; }
+
+  Divide_TestFitnessMeasures(ctx);
+
+  int num_offspring = m_world->GetConfig().DIVIDE_SEMEL_OFFSPRING.Get();
+  if (num_offspring < 1) num_offspring = 2;
+
+  m_organism->GetPhenotype().SetDivideSex(false);
+  m_organism->GetPhenotype().SetCrossNum(0);
+
+  m_organism->ActivateDivideSemel(ctx, num_offspring);
   return true;
 }
 
@@ -4414,17 +4479,17 @@ bool cHardwareCPU::Inst_SenseResource2(cAvidaContext& ctx)
 
 bool cHardwareCPU::Inst_SenseFacedResource0(cAvidaContext& ctx)
 {
-  return DoSenseResourceX(REG_BX, m_organism->GetOrgInterface().GetFacedCellID(), 0, ctx);
+  return DoSenseFacedResourceX(REG_BX, 0, ctx);
 }
 
 bool cHardwareCPU::Inst_SenseFacedResource1(cAvidaContext& ctx)
 {
-  return DoSenseResourceX(REG_BX, m_organism->GetOrgInterface().GetFacedCellID(), 1, ctx);
+  return DoSenseFacedResourceX(REG_BX, 1, ctx);
 }
 
 bool cHardwareCPU::Inst_SenseFacedResource2(cAvidaContext& ctx)
 {
-  return DoSenseResourceX(REG_BX, m_organism->GetOrgInterface().GetFacedCellID(), 2, ctx);
+  return DoSenseFacedResourceX(REG_BX, 2, ctx);
 }
 
 
@@ -4438,10 +4503,30 @@ bool cHardwareCPU::DoSenseResourceX(int reg_to_set, int cell_id, int resid, cAvi
   // Make sure we have the resource requested
   if (resid >= res_count.GetSize()) return false;
   
-  GetRegister(reg_to_set) = (int) res_count[resid];
+  // Preserve fractional gradient information. With shallow spatial gradients
+  // (e.g. height=20, spread=70), most cells have 0 < resource < 1, so a raw
+  // integer cast makes both current and faced sensors read as 0 until the org
+  // is already deep inside the food patch.
+  GetRegister(reg_to_set) = (int) (res_count[resid] * 100.0 + 0.5);
   
   return true; 
   
+}
+
+bool cHardwareCPU::DoSenseFacedResourceX(int reg_to_set, int resid, cAvidaContext& ctx)
+{
+  assert(resid >= 0);
+
+  const Apto::Array<double> res_count = m_organism->GetOrgInterface().GetFacedCellResources(ctx) +
+    m_organism->GetOrgInterface().GetDemeResources(m_organism->GetOrgInterface().GetDemeID(), ctx);
+
+  if (resid >= res_count.GetSize()) return false;
+
+  // Match DoSenseResourceX scaling so genomes can compare "here" vs "ahead"
+  // even on the fractional tail of a spatial gradient.
+  GetRegister(reg_to_set) = (int) (res_count[resid] * 100.0 + 0.5);
+
+  return true;
 }
 
 bool cHardwareCPU::Inst_SenseResourceID(cAvidaContext& ctx)
@@ -7035,6 +7120,49 @@ bool cHardwareCPU::Inst_HeadDivideAsexWait(cAvidaContext& ctx)
   m_organism->GetPhenotype().SetDivideSex(true);
   m_organism->GetPhenotype().SetCrossNum(0);
   return Inst_HeadDivide(ctx); 
+}
+
+bool cHardwareCPU::Inst_DivideSemel(cAvidaContext& ctx)
+{
+  AdjustHeads();
+  const int divide_pos = getHead(nHardware::HEAD_READ).GetPosition();
+  int child_end = getHead(nHardware::HEAD_WRITE).GetPosition();
+  if (child_end == 0) child_end = m_memory.GetSize();
+  const int extra_lines = m_memory.GetSize() - child_end;
+  const int child_size = m_memory.GetSize() - divide_pos - extra_lines;
+
+  const bool viable = Divide_CheckViable(ctx, divide_pos, child_size);
+  if (!viable) return false;
+
+  InstructionSequencePtr offspring_seq(new InstructionSequence(m_memory.Crop(divide_pos, divide_pos + child_size)));
+  HashPropertyMap props;
+  cHardwareManager::SetupPropertyMap(props, (const char*)m_inst_set->GetInstSetName());
+  Genome offspring(GetType(), props, offspring_seq);
+
+  if (m_world->GetConfig().REQUIRE_EXACT_COPY.Get()) {
+    const Genome& base_genome = m_organism->GetGenome();
+    ConstInstructionSequencePtr seq_p;
+    seq_p.DynamicCastFrom(base_genome.Representation());
+    const InstructionSequence& seq = *seq_p;
+    if (seq != *offspring_seq) return false;
+  }
+
+  m_organism->OffspringGenome() = offspring;
+  m_memory.Resize(divide_pos);
+
+  Divide_DoMutations(ctx);
+  Divide_TestFitnessMeasures1(ctx);
+
+  int num_offspring = m_world->GetConfig().DIVIDE_SEMEL_OFFSPRING.Get();
+  if (num_offspring < 1) num_offspring = 2;
+
+  m_organism->GetPhenotype().SetDivideSex(false);
+  m_organism->GetPhenotype().SetCrossNum(0);
+
+  m_organism->ActivateDivideSemel(ctx, num_offspring);
+
+  AdjustHeads();
+  return true;
 }
 
 bool cHardwareCPU::Inst_HeadDivideMateSelect(cAvidaContext& ctx)  

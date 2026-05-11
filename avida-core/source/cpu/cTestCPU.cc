@@ -164,8 +164,12 @@ bool cTestCPU::ProcessGestation(cAvidaContext& ctx, cCPUTestInfo& test_info, int
   // This way of keeping track of time is only used to update resources...
   int time_used = m_res_cpu_cycle_offset; // Note: the offset is zero by default if no resources being used @JEB
   
+  const bool measure_lifetime_output = (m_world->GetConfig().FITNESS_METHOD.Get() == 3);
+
   organism.GetHardware().SetTrace(test_info.GetTracer());
-  while (time_used < time_allocated && organism.GetPhenotype().GetNumDivides() == 0 && !organism.IsDead())
+  while (time_used < time_allocated &&
+         (measure_lifetime_output || organism.GetPhenotype().GetNumDivides() == 0) &&
+         !organism.IsDead())
   {
     time_used++;
     
@@ -433,4 +437,3 @@ void cTestCPU::ResetInputs(cAvidaContext& ctx)
 	if (!m_use_manual_inputs)
 		m_world->GetEnvironment().SetupInputs(ctx, input_array, m_use_random_inputs);
 }
-

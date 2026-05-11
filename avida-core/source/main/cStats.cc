@@ -74,6 +74,13 @@ cStats::cStats(cWorld* world)
 , min_merit(FLT_MAX)
 , min_gestation_time(INT_MAX)
 , min_genome_length(INT_MAX)
+, m_death_fit_sum_accum(0.0)
+, m_death_fit_count_accum(0)
+, m_death_fit_max_accum(0.0)
+, m_death_fit_have_max_accum(false)
+, ave_fitness_at_death_snapshot(0.0)
+, max_fitness_at_death_snapshot(0.0)
+, death_fitness_sample_count(0)
 , num_births(0)
 , cumulative_births(0)
 , num_deaths(0)
@@ -418,6 +425,16 @@ mgr->Register(name, activate); \
   PROVIDE("core.world.ave_fitness",        "Average Fitness",                      double, GetAveFitness);
   
   
+  m_data_manager.Add("ave_fitness_dead", "Mean terminal fitness among deaths (last update)",
+                       &cStats::GetAveFitnessAtDeath);
+  m_data_manager.Add("max_fitness_dead", "Max terminal fitness among deaths (last update)",
+                       &cStats::GetMaxFitnessAtDeath);
+  m_data_manager.Add("death_fitness_n", "Deaths counted toward ave/max_fitness_dead",
+                       &cStats::GetDeathFitnessSampleCount);
+  
+  PROVIDE("core.world.ave_fitness_dead", "Mean fitness at death (last completed update)", double, GetAveFitnessAtDeath);
+  PROVIDE("core.world.max_fitness_dead", "Max fitness at death (last completed update)", double, GetMaxFitnessAtDeath);
+  
   // Maximums
   m_data_manager.Add("max_fitness", "Maximum Fitness in Population", &cStats::GetMaxFitness);
   m_data_manager.Add("max_merit",   "Maximum Merit in Population",   &cStats::GetMaxMerit);
@@ -627,6 +644,33 @@ void cStats::ProcessUpdate()
   num_migrations = 0;
   
   m_num_successful_mates = 0;
+}
+
+void cStats::RecordDeathFitnessTerminal(double terminal_fitness)
+{
+  m_death_fit_sum_accum += terminal_fitness;
+  m_death_fit_count_accum++;
+  if (!m_death_fit_have_max_accum || terminal_fitness > m_death_fit_max_accum) {
+    m_death_fit_max_accum = terminal_fitness;
+    m_death_fit_have_max_accum = true;
+  }
+}
+
+void cStats::FinalizeDeathFitnessSnapshot()
+{
+  if (m_death_fit_count_accum > 0) {
+    ave_fitness_at_death_snapshot = m_death_fit_sum_accum / static_cast<double>(m_death_fit_count_accum);
+    max_fitness_at_death_snapshot = m_death_fit_have_max_accum ? m_death_fit_max_accum : 0.0;
+    death_fitness_sample_count = m_death_fit_count_accum;
+  } else {
+    ave_fitness_at_death_snapshot = 0.0;
+    max_fitness_at_death_snapshot = 0.0;
+    death_fitness_sample_count = 0;
+  }
+  m_death_fit_sum_accum = 0.0;
+  m_death_fit_count_accum = 0;
+  m_death_fit_have_max_accum = false;
+  m_death_fit_max_accum = 0.0;
 }
 
 int cStats::GetNumPreyCreatures() const

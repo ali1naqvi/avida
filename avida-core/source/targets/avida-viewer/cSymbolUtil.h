@@ -29,6 +29,8 @@ public:
   static char GetMutSymbol(      const cPopulationCell & cell );
   static char GetThreadSymbol(   const cPopulationCell & cell );
   static char GetLineageSymbol(  const cPopulationCell & cell );
+  static char GetEnergySymbol(   const cPopulationCell & cell );
+  static char GetEnergyColor(    const cPopulationCell & cell );
 };
 
 #endif

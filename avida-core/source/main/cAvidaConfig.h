@@ -288,8 +288,12 @@ public:
   
   // -------- Topology config options --------
   CONFIG_ADD_GROUP(TOPOLOGY_GROUP, "World topology");
-  CONFIG_ADD_VAR(WORLD_X, int, 60, "Width of the Avida world");
-  CONFIG_ADD_VAR(WORLD_Y, int, 60, "Height of the Avida world");
+  CONFIG_ADD_VAR(WORLD_X, int, 60, "Width of the Avida population grid");
+  CONFIG_ADD_VAR(WORLD_Y, int, 60, "Height of the Avida population grid");
+  CONFIG_ADD_VAR(ENV_WORLD_X, int, 0, "Width of the environment (resource/gradient) grid.\n0 = use WORLD_X (default; population grid and environment grid identical).\n>0 = use a separate environment grid of this width. Resources and gradients\nare allocated on the ENV_WORLD_X x ENV_WORLD_Y grid; population cells map to\nenvironment cells by linear scaling so both grids cover the same physical area.");
+  CONFIG_ADD_VAR(ENV_WORLD_Y, int, 0, "Height of the environment (resource/gradient) grid.\n0 = use WORLD_Y (default; population grid and environment grid identical).\n>0 = use a separate environment grid of this height. See ENV_WORLD_X.");
+  CONFIG_ADD_VAR(DECOUPLE_WORLD_POSITION, bool, 1, "Allow organisms to carry per-organism world positions independent of their population-grid slots.\n1 = enabled: InjectOutsideGradient/InjectAwayFromGradientPeak and decoupled offspring can set an env-grid override, and move advances that override.\n0 = disabled: env-grid lookups ignore per-organism overrides and move swaps population cells normally.");
+  CONFIG_ADD_VAR(GRADIENT_RESET_ORG_POS, int, 0, "What to do with existing organisms after SetGradientResource resets a gradient.\n0 = keep existing positions\n1 = with DECOUPLE_WORLD_POSITION=1, re-randomize only organisms not already in the reset-start region\n2 = with DECOUPLE_WORLD_POSITION=1, re-randomize all live organisms into the reset-start region\nThe reset-start region uses OFFSPRING_WORLD_POS and OFFSPRING_WORLD_POS_MARGIN:\nOFFSPRING_WORLD_POS=2 means away from the peak region; otherwise outside the gradient food disc.\nIf outside-gradient placement has no eligible cells, reset falls back to away-from-peak placement.\nWhen DECOUPLE_WORLD_POSITION=0, nonzero modes warn and leave organisms in place.");
   CONFIG_ADD_VAR(WORLD_GEOMETRY, int, 2, "1 = Bounded Grid (WOLRD_X x WORLD_Y)\n2 = Toroidal Grid (WOLRD_X x WORLD_Y; wraps at edges\n3 = Clique (all population cells are connected)\n4 = Hexagonal grid\n5 = Partial\n6 = 3D Lattice (under development)\n7 = Random connected\n8 = Scale-free (detailed below)");
   CONFIG_ADD_VAR(SCALE_FREE_M, int, 3, "Number of connections per cell in a scale-free geometry");
   CONFIG_ADD_VAR(SCALE_FREE_ALPHA, double, 1.0, "Attachment power (1=linear)");
@@ -365,7 +369,10 @@ public:
   // -------- Birth and Death config options --------
   CONFIG_ADD_GROUP(REPRODUCTION_GROUP, "Birth and Death config options");
   CONFIG_ADD_VAR(DIVIDE_FAILURE_RESETS, int, 0, "When Divide fails, organisms are interally reset");
-  CONFIG_ADD_VAR(BIRTH_METHOD, int, 0, "Which organism should be replaced when a birth occurs?\n0 = Random organism in neighborhood\n1 = Oldest in neighborhood\n2 = Largest Age/Merit in neighborhood\n3 = None (use only empty cells in neighborhood)\n4 = Random from population (Mass Action)\n5 = Oldest in entire population\n6 = Random within deme\n7 = Organism faced by parent\n8 = Next grid cell (id+1)\n9 = Largest energy used in entire population\n10 = Largest energy used in neighborhood\n11 = Local neighborhood dispersal\n12 = Kill offpsring after recording birth stats (for behavioral trials)\n13 = Kill parent and offpsring (for behavioral trials)");
+  CONFIG_ADD_VAR(BIRTH_METHOD, int, 0, "Which organism should be replaced when a birth occurs?\n0 = Random organism in neighborhood\n1 = Oldest in neighborhood\n2 = Largest Age/Merit in neighborhood\n3 = None (use only empty cells in neighborhood)\n4 = Random from population (Mass Action)\n5 = Oldest in entire population\n6 = Random within deme\n7 = Organism faced by parent\n8 = Next grid cell (id+1)\n9 = Largest energy used in entire population\n10 = Largest energy used in neighborhood\n11 = Local neighborhood dispersal\n12 = None (use only empty cells anywhere on the population grid)\n13 = Kill offpsring after recording birth stats (for behavioral trials; was BIRTH_METHOD 12)\n14 = Kill parent and offpsring (for behavioral trials; was BIRTH_METHOD 13)");
+  CONFIG_ADD_VAR(OFFSPRING_WORLD_POS, int, 0, "Where does an offspring start in the *world* (env-grid) when its parent has\na decoupled world position (set by InjectOutsideGradient, InjectAwayFromGradientPeak, or `move`)?\nPopulation cell placement is independent of this and follows BIRTH_METHOD.\n0 = inherit parent's current world position (offspring spawn where parent is)\n1 = re-randomize fresh OUTSIDE the gradient by OFFSPRING_WORLD_POS_MARGIN env-cells\n2 = re-randomize inside the world gradient but at least OFFSPRING_WORLD_POS_MARGIN\n    env-cells away from the peak region\nIgnored unless DECOUPLE_WORLD_POSITION=1 and the parent has a per-organism world override; without one,\nworld position falls back to the population->environment cell mapping.");
+  CONFIG_ADD_VAR(OFFSPRING_WORLD_POS_MARGIN, int, 0, "Shared distance parameter used when re-randomizing organism world positions.\nFor OFFSPRING_WORLD_POS=1 and GRADIENT_RESET_ORG_POS modes 1 or 2, it is an\nempty-cell buffer outside the food disc: distance to the closest\nGRADIENT_RESOURCE peak bbox must exceed spread + margin.\nFor OFFSPRING_WORLD_POS=2, it is a minimum distance from the peak bbox itself,\nso whole-environment gradients can give food everywhere while still requiring\nmovement toward the main concentration.");
+  CONFIG_ADD_VAR(OFFSPRING_WORLD_POS_SHARED_INTERVAL, int, 0, "Share re-randomized offspring world positions across generations.\nOnly applies when OFFSPRING_WORLD_POS is 1 or 2, and also to InjectOutsideGradient/InjectAwayFromGradientPeak founders.\n0 = current behavior: each individual samples its own eligible gradient-start cell\n1 = everyone in the same generation gets the same sampled start cell; resample every generation\nN > 1 = everyone shares one sampled start cell for N generations, then resample.");
   CONFIG_ADD_VAR(PREFER_EMPTY, int, 1, "Overide BIRTH_METHOD to preferentially choose empty cells for offsping?");
   CONFIG_ADD_VAR(ALLOW_PARENT, int, 1, "Should parents be considered when deciding where to place offspring?");
   CONFIG_ADD_VAR(DISPERSAL_RATE, double, 0.0, "Rate of dispersal under birth method 11\n(poisson distributed random connection list hops)");
@@ -383,6 +390,11 @@ public:
   CONFIG_ADD_VAR(INHERIT_MERIT, int, 1, "Should merit be inhereted from mother parent? (in asexual)");
   CONFIG_ADD_VAR(INHERIT_MULTITHREAD, int, 0, "Should offspring of parents with multiple threads be marked multithreaded?");
   CONFIG_ADD_ALIAS(INHERIT_MULTI_THREAD_CLASSIFICATION);
+  CONFIG_ADD_VAR(DIVIDE_SEMEL_OFFSPRING, int, 2, "Number of offspring produced by divide-semel (semelparous division).\nParent donates all energy equally and dies.\nOnly used when SEMEL_ENERGY_PER_OFFSPRING <= 0 (legacy fixed-N mode).");
+  CONFIG_ADD_VAR(SEMEL_ENERGY_PER_OFFSPRING, double, 0.0, "Minimum propagule energy: if > 0 and ENERGY_ENABLED, semel offspring count = floor(parent_energy / effective_child_packet).\nThe effective packet is at least this value, and is raised when needed to cover MIN_ENERGY_TO_REPRODUCE plus one genome-length pass of FLAT_ENERGY_COST_PER_INST.\nAny remainder is lost when the parent dies. If <= 0 (default): use fixed DIVIDE_SEMEL_OFFSPRING with even energy split (legacy behavior).");
+  CONFIG_ADD_VAR(SEMEL_MAX_OFFSPRING, int, -1, "Max offspring cap for energy-scaled semelparity (SEMEL_ENERGY_PER_OFFSPRING > 0).\n-1 = no cap.");
+  CONFIG_ADD_VAR(SEMEL_MIN_OFFSPRING, int, 1, "Minimum viable brood size for energy-scaled semelparity.\nIf computed num_offspring < this, behavior is controlled by SEMEL_INSUFFICIENT_ENERGY_DIES.");
+  CONFIG_ADD_VAR(SEMEL_INSUFFICIENT_ENERGY_DIES, int, 0, "If 1 and SEMEL_ENERGY_PER_OFFSPRING > 0: parent dies when energy cannot fund SEMEL_MIN_OFFSPRING offspring (all-in spawning, e.g. salmon).\nIf 0 (default): parent survives with energy intact and may try again later (bounded by AGE_LIMIT/DEATH_METHOD).");
   
 	
 
@@ -414,7 +426,8 @@ public:
   CONFIG_ADD_VAR(IMPLICIT_REPRO_CPU_CYCLES, int, 0, "Call Inst_Repro after this many cpu cycles. 0 = OFF");  
   CONFIG_ADD_VAR(IMPLICIT_REPRO_TIME, int, 0, "Call Inst_Repro after this time used. 0 = OFF");  
   CONFIG_ADD_VAR(IMPLICIT_REPRO_END, int, 0, "Call Inst_Repro after executing the last instruction in the genome.");  
-  CONFIG_ADD_VAR(IMPLICIT_REPRO_ENERGY, double, 0.0, "Call Inst_Repro if organism accumulates this amount of energy.");   
+  CONFIG_ADD_VAR(IMPLICIT_REPRO_ENERGY, double, 0.0, "Call Inst_Repro if organism accumulates this amount of energy.");
+  CONFIG_ADD_VAR(MIN_ENERGY_TO_REPRODUCE, double, 0.0, "Minimum stored energy required for a successful divide.\n0 = no energy requirement (default).\nWhen > 0 and ENERGY_ENABLED, divide fails if energy < this value.");
 
   // -------- Recombination config options --------
   CONFIG_ADD_GROUP(RECOMBINATION_GROUP, "Sexual Recombination and Modularity");
@@ -558,7 +571,7 @@ public:
   CONFIG_ADD_VAR(MERIT_DEFAULT_BONUS, int, 0, "Instead of inheriting bonus from parent, use this value instead (0 = off)"); 
   CONFIG_ADD_VAR(MERIT_INC_APPLY_IMMEDIATE, bool, 0, "Should merit increases (above current) be applied immediately, or delayed until divide?");
   CONFIG_ADD_VAR(TASK_REFRACTORY_PERIOD, double, 0.0, "Number of updates after taske until regain full value");
-  CONFIG_ADD_VAR(FITNESS_METHOD, int, 0, "0 = default, 1 = sigmoidal, ");
+  CONFIG_ADD_VAR(FITNESS_METHOD, int, 0, "0 = default (merit*bonus/gestation_time)\n1 = sigmoidal\n2 = diminishing-returns enzyme\n3 = Lifetime reproductive output (R_0): cumulative successful offspring produced over the organism's lifetime. No time normalization. Biologically 'net reproductive rate'.");
   CONFIG_ADD_VAR(FITNESS_COEFF_1, double, 1.0, "1st FITNESS_METHOD parameter");
   CONFIG_ADD_VAR(FITNESS_COEFF_2, double, 1.0, "2nd FITNESS_METHOD parameter");
   CONFIG_ADD_VAR(MAX_CPU_THREADS, int, 1, "Maximum number of Threads a CPU can spawn");
@@ -671,6 +684,7 @@ public:
   CONFIG_ADD_VAR(ENERGY_THRESH_HIGH, double, .75, "Threshold percent above which energy level is considered high.  Requires ENERGY_CAP.");
   CONFIG_ADD_VAR(ENERGY_COMPARISON_EPSILON, double, 0.0, "Percent difference (relative to executing organism) required in energy level comparisons");
   CONFIG_ADD_VAR(ENERGY_REQUEST_RADIUS, int, 1, "Radius of broadcast energy request messages.");
+  CONFIG_ADD_VAR(FLAT_ENERGY_COST_PER_INST, double, 0.0, "Flat energy deducted per instruction executed (maintenance cost).\n0 = disabled (use per-instruction-type costs from instset.cfg instead).\nWhen > 0, every instruction costs this fixed amount regardless of type.\nOrganism dies if energy drops below this cost.");
 	
 
   // -------- Energy Sharing config options --------
@@ -736,7 +750,7 @@ public:
   CONFIG_ADD_VAR(MOVEMENT_COLLISIONS_SELECTION_TYPE, int, 0, "0 = 50% chance\n1 = binned vitality based");
   CONFIG_ADD_VAR(VITALITY_BIN_EXTREMES, double, 1.0, "vitality multiplier for extremes (> 1 stddev from the mean population age)");
   CONFIG_ADD_VAR(VITALITY_BIN_CENTER, double, 10.0, "vitality multiplier for center bin (with 1 stddev of the mean population age)");
-  CONFIG_ADD_VAR(DEADLY_BOUNDARIES, int, 0, "Are bounded grid border cell deadly? If == 1, orgs stepping onto boundary cells will disappear into oblivion (aka die)");
+  CONFIG_ADD_VAR(DEADLY_BOUNDARIES, int, 0, "How should bounded-grid border cells behave?\n0 = normal cells\n1 = deadly: organisms stepping or being born there die\n2 = blocked: moves into border cells fail and offspring are not placed there");
   CONFIG_ADD_VAR(STEP_COUNTING_ERROR, int, 0, "% chance a step is not counted as part of easterly/northerly travel.");
   CONFIG_ADD_VAR(USE_AVATARS, int, 0, "Set orgs to move & navigate in solo avatar worlds(1=yes, 2=yes, with org interactions).");
   CONFIG_ADD_VAR(AVATAR_BIRTH, int, 0, "0 = Same as parent\n1 = Random\n2 = Cell faced by parent avatar\n3 = next grid cell\n4 = Center of the world");
@@ -770,7 +784,8 @@ public:
 
   // -------- Synchronization config options --------
   CONFIG_ADD_GROUP(SYNCHRONIZATION_GROUP, "Synchronization settings");
-  CONFIG_ADD_VAR(SYNC_FITNESS_WINDOW, int, 100, "Number of updates over which to calculate fitness (default=100).");
+  CONFIG_ADD_VAR(GENERATION_LOCK, int, 0, "Enforce non-overlapping (synchronous) generations.\n0 = OFF (default)\n1 = ON: organisms in generation N+1 do not execute until ALL organisms in generation N have divided.\nRequires DIVIDE_METHOD 1 and GENERATION_INC_METHOD 1 for correct operation.");
+  CONFIG_ADD_VAR(SYNC_FITNESS_WINDOW, int, 100, "For Synchronization/Desynchronization deme competition only: number of recent\nupdates in which flash events are retained when scoring sync (not organism\nlifetime fitness; see FITNESS_METHOD / merit).");
   CONFIG_ADD_VAR(SYNC_FLASH_LOSSRATE, double, 0.0, "P() to lose a flash send (0.0==off).");
   CONFIG_ADD_VAR(SYNC_TEST_FLASH_ARRIVAL, int, -1, "CPU cycle at which an organism will receive a flash (off=-1, default=-1, analyze mode only.)");	
 	

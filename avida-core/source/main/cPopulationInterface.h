@@ -98,6 +98,7 @@ public:
   bool GetLGTFragment(cAvidaContext& ctx, int region, const Genome& dest_genome, InstructionSequence& seq);
 
   bool Divide(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome);
+  bool DivideSemel(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome, int num_offspring);
   cOrganism* GetNeighbor();
   bool IsNeighborCellOccupied();
   int GetNumNeighbors();
@@ -157,6 +158,7 @@ public:
   int GetStateGridID(cAvidaContext& ctx);
 	
   bool Move(cAvidaContext& ctx, int src_id, int dest_id);
+  int TryMoveDecoupled(cAvidaContext& ctx, int facing);
 
   // Reputation
   void RotateToGreatestReputation();
