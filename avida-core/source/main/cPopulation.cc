@@ -1371,10 +1371,6 @@ bool cPopulation::ActivateSemelOffspring(cAvidaContext& ctx, const Genome& offsp
   if (num_offspring < 1) return true;
 
   cPhenotype& parent_phenotype = parent_organism->GetPhenotype();
-  ConstInstructionSequencePtr offspring_seq;
-  offspring_seq.DynamicCastFrom(offspring_genome.Representation());
-  const int offspring_genome_size = !offspring_seq ? 0 : offspring_seq->GetSize();
-
   // Collect total parent energy before any resets
   double total_energy = 0.0;
   if (m_world->GetConfig().ENERGY_ENABLED.Get()) {
@@ -1383,25 +1379,15 @@ bool cPopulation::ActivateSemelOffspring(cAvidaContext& ctx, const Genome& offsp
     total_energy = parent_phenotype.GetStoredEnergy();
   }
 
-  // Energy-scaled semelparity (viable-propagule model).
+  // Energy-scaled semelparity.
   // If SEMEL_ENERGY_PER_OFFSPRING > 0, fecundity scales with parent energy.
-  // The configured packet is a lower bound, but a child born exactly at
-  // MIN_ENERGY_TO_REPRODUCE cannot pay even one maintenance step before falling
-  // below the reproduction gate. Reserve one genome-length pass of flat
-  // instruction cost so non-overlapping offspring can actually complete a
-  // lifetime and still attempt reproduction if they found no extra energy.
+  // This packet is independent of MIN_ENERGY_TO_REPRODUCE, which gates
+  // iteroparous reproduction attempts.
   double energy_per_offspring_override = -1.0;  // <0 => use legacy even-split
   if (m_world->GetConfig().ENERGY_ENABLED.Get()) {
     const double per_off = m_world->GetConfig().SEMEL_ENERGY_PER_OFFSPRING.Get();
     if (per_off > 0.0) {
       double offspring_energy = per_off;
-      const double min_repro_energy = m_world->GetConfig().MIN_ENERGY_TO_REPRODUCE.Get();
-      const double flat_cost = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
-      if (min_repro_energy > 0.0 && flat_cost > 0.0 && offspring_genome_size > 0) {
-        offspring_energy = std::max(offspring_energy,
-                                    min_repro_energy + flat_cost * offspring_genome_size);
-      }
-
       const double birth_bonus = m_world->GetConfig().ENERGY_GIVEN_AT_BIRTH.Get();
       if (birth_bonus > 0.0) offspring_energy += birth_bonus;
 

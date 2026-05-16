@@ -3404,7 +3404,7 @@ bool cHardwareCPU::Inst_Repro(cAvidaContext& ctx)
   Divide_DoMutations(ctx);
   
   // Check viability
-  bool viable = Divide_CheckViable(ctx, org_seq->GetSize(), offspring_seq->GetSize(), 1);
+  bool viable = Divide_CheckViable(ctx, org_seq->GetSize(), offspring_seq->GetSize(), true);
   if (!viable) { return false; }
   
   // Many tests will require us to run the offspring through a test CPU;
@@ -3422,7 +3422,7 @@ bool cHardwareCPU::Inst_Repro(cAvidaContext& ctx)
   if (m_world->GetConfig().DIVIDE_METHOD.Get() == DIVIDE_METHOD_SPLIT) m_advance_ip = false;
 
   const bool energy_enabled = m_world->GetConfig().ENERGY_ENABLED.Get();
-  const double per_off = energy_enabled ? m_world->GetConfig().SEMEL_ENERGY_PER_OFFSPRING.Get() : 0.0;
+  const double per_off = energy_enabled ? m_world->GetConfig().REPRO_ENERGY_PER_OFFSPRING.Get() : 0.0;
   if (energy_enabled && per_off > 0.0) {
     m_organism->GetPhenotype().SetOffspringEnergyPacketOverride(per_off);
   }
@@ -3481,7 +3481,7 @@ bool cHardwareCPU::Inst_ReproSemel(cAvidaContext& ctx)
 
   Divide_DoMutations(ctx);
 
-  bool viable = Divide_CheckViable(ctx, org_seq->GetSize(), offspring_seq->GetSize(), 1);
+  bool viable = Divide_CheckViable(ctx, org_seq->GetSize(), offspring_seq->GetSize(), true, false);
   if (!viable) { return false; }
 
   Divide_TestFitnessMeasures(ctx);
@@ -7131,7 +7131,7 @@ bool cHardwareCPU::Inst_DivideSemel(cAvidaContext& ctx)
   const int extra_lines = m_memory.GetSize() - child_end;
   const int child_size = m_memory.GetSize() - divide_pos - extra_lines;
 
-  const bool viable = Divide_CheckViable(ctx, divide_pos, child_size);
+  const bool viable = Divide_CheckViable(ctx, divide_pos, child_size, false, false);
   if (!viable) return false;
 
   InstructionSequencePtr offspring_seq(new InstructionSequence(m_memory.Crop(divide_pos, divide_pos + child_size)));

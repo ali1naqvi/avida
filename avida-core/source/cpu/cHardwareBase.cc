@@ -146,7 +146,8 @@ int cHardwareBase::calcExecutedSize(const int parent_size)
   return executed_size;
 }
 
-bool cHardwareBase::Divide_CheckViable(cAvidaContext& ctx, const int parent_size, const int child_size, bool using_repro)
+bool cHardwareBase::Divide_CheckViable(cAvidaContext& ctx, const int parent_size, const int child_size,
+                                       bool using_repro, bool require_min_repro_energy)
 {
 #define ORG_FAULT(error) if (ctx.OrgFaultReporting()) m_organism->Fault(FAULT_LOC_DIVIDE, FAULT_TYPE_ERROR, error)
   
@@ -237,7 +238,7 @@ bool cHardwareBase::Divide_CheckViable(cAvidaContext& ctx, const int parent_size
   }
   
   double min_energy = m_world->GetConfig().MIN_ENERGY_TO_REPRODUCE.Get();
-  if (min_energy > 0.0 && m_world->GetConfig().ENERGY_ENABLED.Get()) {
+  if (require_min_repro_energy && min_energy > 0.0 && m_world->GetConfig().ENERGY_ENABLED.Get()) {
     if (m_organism->GetPhenotype().GetStoredEnergy() < min_energy) {
       m_organism->GetPhenotype().SetToDie();
       return false;
@@ -1509,4 +1510,3 @@ void cHardwareBase::PrintMiniTraceReactions()
     m_world->GetStats().PrintMiniTraceReactions(m_organism);    
   }
 }
-

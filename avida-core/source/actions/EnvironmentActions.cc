@@ -38,6 +38,7 @@
 #include "cWorld.h"
 
 #include <algorithm>
+#include <fstream>
 #include <limits>
 #include <vector>
 
@@ -458,6 +459,36 @@ public:
       const int picked = best_cells[ctx.GetRandom().GetInt(static_cast<int>(best_cells.size()))];
       res->SetPeakX(picked % env_w);
       res->SetPeakY(picked / env_w);
+
+      const char* peak_filename = "data/peak_location.dat";
+      std::ifstream peak_in(peak_filename);
+      const bool write_header = (!peak_in.good() || peak_in.peek() == std::ifstream::traits_type::eof());
+      peak_in.close();
+      std::ofstream peak_out(peak_filename, std::ios_base::app);
+      if (peak_out.good()) {
+        if (write_header) {
+          peak_out << "#  1: Update\n";
+          peak_out << "#  2: Generation\n";
+          peak_out << "#  3: Peak X\n";
+          peak_out << "#  4: Peak Y\n";
+          peak_out << "#  5: Peak resource value\n";
+          peak_out << "#  6: Tied candidate cells\n";
+          peak_out << "#  7: Nearby organisms in chosen radius\n";
+          peak_out << "#  8: Radius\n";
+          peak_out << "#  9: Resource\n";
+          peak_out << "# 10: Source\n";
+        }
+        peak_out << m_world->GetStats().GetUpdate() << " "
+                 << m_world->GetStats().GetGeneration() << " "
+                 << res->GetPeakX() << " "
+                 << res->GetPeakY() << " "
+                 << res->GetHeight() << " "
+                 << best_cells.size() << " "
+                 << best_count << " "
+                 << m_radius << " "
+                 << (const char*)m_res_name << " "
+                 << "SetGradientResourceLeastPopulated\n";
+      }
 
       if (m_world->GetVerbosity() >= VERBOSE_ON) {
         cout << "SetGradientResourceLeastPopulated: moved "

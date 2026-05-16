@@ -2108,7 +2108,7 @@ double cPhenotype::ExtractParentEnergy() {
   
   if (GetStoredEnergy() <= 0.0) return 0.0;
 
-  // Optional fixed packet model (used by `repro` when SEMEL_ENERGY_PER_OFFSPRING > 0):
+  // Optional fixed packet model (used by `repro` when REPRO_ENERGY_PER_OFFSPRING > 0):
   // parent must be able to fund the packet; child receives packet + ENERGY_GIVEN_AT_BIRTH.
   if (packet_override > 0.0) {
     if (GetStoredEnergy() < packet_override) return 0.0;

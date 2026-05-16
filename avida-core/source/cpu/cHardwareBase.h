@@ -285,7 +285,8 @@ protected:
   
   
   // --------  Division Support Methods  --------
-  bool Divide_CheckViable(cAvidaContext& ctx, const int parent_size, const int child_size, bool using_repro = false);
+  bool Divide_CheckViable(cAvidaContext& ctx, const int parent_size, const int child_size,
+                          bool using_repro = false, bool require_min_repro_energy = true);
   unsigned Divide_DoExactMutations(cAvidaContext& ctx, double mut_multiplier = 1.0, const int pointmut = INT_MAX);
   bool Divide_TestFitnessMeasures1(cAvidaContext& ctx);
   

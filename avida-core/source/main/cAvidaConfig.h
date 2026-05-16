@@ -391,7 +391,8 @@ public:
   CONFIG_ADD_VAR(INHERIT_MULTITHREAD, int, 0, "Should offspring of parents with multiple threads be marked multithreaded?");
   CONFIG_ADD_ALIAS(INHERIT_MULTI_THREAD_CLASSIFICATION);
   CONFIG_ADD_VAR(DIVIDE_SEMEL_OFFSPRING, int, 2, "Number of offspring produced by divide-semel (semelparous division).\nParent donates all energy equally and dies.\nOnly used when SEMEL_ENERGY_PER_OFFSPRING <= 0 (legacy fixed-N mode).");
-  CONFIG_ADD_VAR(SEMEL_ENERGY_PER_OFFSPRING, double, 0.0, "Minimum propagule energy: if > 0 and ENERGY_ENABLED, semel offspring count = floor(parent_energy / effective_child_packet).\nThe effective packet is at least this value, and is raised when needed to cover MIN_ENERGY_TO_REPRODUCE plus one genome-length pass of FLAT_ENERGY_COST_PER_INST.\nAny remainder is lost when the parent dies. If <= 0 (default): use fixed DIVIDE_SEMEL_OFFSPRING with even energy split (legacy behavior).");
+  CONFIG_ADD_VAR(REPRO_ENERGY_PER_OFFSPRING, double, 0.0, "Fixed offspring energy packet for iteroparous repro when > 0 and ENERGY_ENABLED.\nIf <= 0 (default), use the standard fractional parent-energy birth model.");
+  CONFIG_ADD_VAR(SEMEL_ENERGY_PER_OFFSPRING, double, 0.0, "Propagule energy: if > 0 and ENERGY_ENABLED, semel offspring count = floor(parent_energy / child_packet).\nThe child packet is SEMEL_ENERGY_PER_OFFSPRING plus ENERGY_GIVEN_AT_BIRTH, independent of MIN_ENERGY_TO_REPRODUCE.\nAny remainder is lost when the parent dies. If <= 0 (default): use fixed DIVIDE_SEMEL_OFFSPRING with even energy split (legacy behavior).");
   CONFIG_ADD_VAR(SEMEL_MAX_OFFSPRING, int, -1, "Max offspring cap for energy-scaled semelparity (SEMEL_ENERGY_PER_OFFSPRING > 0).\n-1 = no cap.");
   CONFIG_ADD_VAR(SEMEL_MIN_OFFSPRING, int, 1, "Minimum viable brood size for energy-scaled semelparity.\nIf computed num_offspring < this, behavior is controlled by SEMEL_INSUFFICIENT_ENERGY_DIES.");
   CONFIG_ADD_VAR(SEMEL_INSUFFICIENT_ENERGY_DIES, int, 0, "If 1 and SEMEL_ENERGY_PER_OFFSPRING > 0: parent dies when energy cannot fund SEMEL_MIN_OFFSPRING offspring (all-in spawning, e.g. salmon).\nIf 0 (default): parent survives with energy intact and may try again later (bounded by AGE_LIMIT/DEATH_METHOD).");
@@ -427,7 +428,7 @@ public:
   CONFIG_ADD_VAR(IMPLICIT_REPRO_TIME, int, 0, "Call Inst_Repro after this time used. 0 = OFF");  
   CONFIG_ADD_VAR(IMPLICIT_REPRO_END, int, 0, "Call Inst_Repro after executing the last instruction in the genome.");  
   CONFIG_ADD_VAR(IMPLICIT_REPRO_ENERGY, double, 0.0, "Call Inst_Repro if organism accumulates this amount of energy.");
-  CONFIG_ADD_VAR(MIN_ENERGY_TO_REPRODUCE, double, 0.0, "Minimum stored energy required for a successful divide.\n0 = no energy requirement (default).\nWhen > 0 and ENERGY_ENABLED, divide fails if energy < this value.");
+  CONFIG_ADD_VAR(MIN_ENERGY_TO_REPRODUCE, double, 0.0, "Minimum stored energy required for a successful non-semel divide.\n0 = no energy requirement (default).\nWhen > 0 and ENERGY_ENABLED, non-semel divide fails if energy < this value.");
 
   // -------- Recombination config options --------
   CONFIG_ADD_GROUP(RECOMBINATION_GROUP, "Sexual Recombination and Modularity");
