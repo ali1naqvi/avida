@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=def-skelly
 
-#SBATCH --ntasks=21               
-#SBATCH --mem-per-cpu=15G      
+#SBATCH --ntasks=1               
+#SBATCH --mem-per-cpu=5G      
 #SBATCH --time=0-5:00  # time (DD-HH:MM)
 
 #SBATCH --output=ecology_%j.out
@@ -15,5 +15,12 @@ module load cmake
 module load gcc
 module load python
 
-cd ~/scratch/avida/cbuild/work/ecology_test
+TEST_NAME="$1"
+
+if [ -z "$TEST_NAME" ]; then
+  echo "Usage: sbatch scripts_ALI/run_ecology_tests.sh <test_dir_name>"
+  exit 1
+fi
+
+cd ~/scratch/avida/cbuild/work/$TEST_NAME
 ../avida -c avida.cfg
