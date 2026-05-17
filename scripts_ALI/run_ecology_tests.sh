@@ -1,8 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=avida-ecology
-#SBATCH --time=06:00:00
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
+#SBATCH --account=def-skelly
+
+#SBATCH --ntasks=21               
+#SBATCH --mem-per-cpu=15G      
+#SBATCH --time=0-5:00  # time (DD-HH:MM)
+
 #SBATCH --output=ecology_%j.out
 #SBATCH --error=ecology_%j.err
 
