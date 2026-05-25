@@ -2,7 +2,7 @@
 #SBATCH --account=def-skelly
 #SBATCH --ntasks=1
 #SBATCH --mem-per-cpu=15G
-#SBATCH --time=0-5:00
+#SBATCH --time=1-0:00
 #SBATCH --array=1-20
 #SBATCH --output=ecology_%x_%A_%a.out
 #SBATCH --error=ecology_%x_%A_%a.err
@@ -22,9 +22,19 @@ if [ -z "$TEST_NAME" ]; then
   exit 1
 fi
 
-BASE_DIR="/home/alinaqvi/projects/def-skelly/alinaqvi/avida/cbuild/work"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE_DIR="$PROJECT_DIR/cbuild/work"
+AVIDA_BIN="$BASE_DIR/avida"
 TEMPLATE_DIR="$BASE_DIR/$TEST_NAME"
 RUN_DIR="$BASE_DIR/${TEST_NAME}_run_${SLURM_ARRAY_TASK_ID}"
+
+if [ ! -x "$AVIDA_BIN" ]; then
+  echo "Missing executable: $AVIDA_BIN"
+  echo "Build Avida on the cluster before submitting this job:"
+  echo "  cd $PROJECT_DIR"
+  echo "  ./build_avida"
+  exit 1
+fi
 
 if [ ! -d "$TEMPLATE_DIR" ]; then
   echo "Missing template directory: $TEMPLATE_DIR"
@@ -37,4 +47,4 @@ cp -a "$TEMPLATE_DIR" "$RUN_DIR"
 cd "$RUN_DIR"
 
 SEED="$SLURM_ARRAY_TASK_ID"
-"$BASE_DIR/avida" -c avida.cfg -s "$SEED"
+"$AVIDA_BIN" -c avida.cfg -s "$SEED"
