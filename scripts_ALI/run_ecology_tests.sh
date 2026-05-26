@@ -22,7 +22,12 @@ if [ -z "$TEST_NAME" ]; then
   exit 1
 fi
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "${SLURM_SUBMIT_DIR:-}" ] && [ -x "$SLURM_SUBMIT_DIR/build_avida" ]; then
+  PROJECT_DIR="$SLURM_SUBMIT_DIR"
+else
+  PROJECT_DIR="$SCRIPT_PROJECT_DIR"
+fi
 BASE_DIR="$PROJECT_DIR/cbuild/work"
 AVIDA_BIN="$BASE_DIR/avida"
 TEMPLATE_DIR="$BASE_DIR/$TEST_NAME"
