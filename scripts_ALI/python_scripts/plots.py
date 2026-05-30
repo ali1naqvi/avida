@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import math
 import os
 import re
@@ -34,9 +33,15 @@ from replay_living_champion import (  # noqa: E402
 )
 
 
-RUN_FOLDER = SCRIPT_DIR
+# Edit these variables to configure the plotting script.
+# RUN_DIR is the Avida run/test directory containing instset.cfg and the data/ folder.
+RUN_DIR = "work/ecology_test_1_fast_run_1"
 DATA_SUBDIR = "data"
 SPOP_PREFIX = "detail"
+INSTSET_PATH: str | None = None  # None means RUN_DIR/instset.cfg
+SAVE_PATH: str | None = None  # None means RUN_DIR/DATA_SUBDIR/plots.pdf
+USE_LATEST_SPOP = False  # False means use the last-generation snapshot
+ALLOW_LIVE_FITNESS_FALLBACK = False
 
 
 def instruction_operand_to_symbol(operand: int) -> str:
@@ -1245,20 +1250,10 @@ def add_non_overlap_pages(pdf: PdfPages, data_dir: str, allow_live_fitness_fallb
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate one PDF with each ecology_test diagnostic plot on its own page.")
-    parser.add_argument("--run-dir", default=RUN_FOLDER, help="Run directory containing instset.cfg and data/")
-    parser.add_argument("--data-subdir", default=DATA_SUBDIR, help="Data subdirectory under --run-dir")
-    parser.add_argument("--spop-prefix", default=SPOP_PREFIX, help="SavePopulation prefix")
-    parser.add_argument("--instset", default=None, help="Instruction set path; default: RUN_DIR/instset.cfg")
-    parser.add_argument("--save", default=None, help="Output PDF; default: DATA_DIR/plots.pdf")
-    parser.add_argument("--latest-spop", action="store_true", help="Use latest .spop instead of last-generation snapshot")
-    parser.add_argument("--allow-live-fitness-fallback", action="store_true", help="Use live fitness if death-based extrema are unavailable")
-    args = parser.parse_args()
-
-    run_dir = os.path.abspath(args.run_dir)
-    data_dir = os.path.join(run_dir, args.data_subdir)
-    inst_path = os.path.abspath(args.instset) if args.instset else os.path.join(run_dir, "instset.cfg")
-    out_pdf = os.path.abspath(args.save) if args.save else os.path.join(data_dir, "plots.pdf")
+    run_dir = os.path.abspath(RUN_DIR)
+    data_dir = os.path.join(run_dir, DATA_SUBDIR)
+    inst_path = os.path.abspath(INSTSET_PATH) if INSTSET_PATH else os.path.join(run_dir, "instset.cfg")
+    out_pdf = os.path.abspath(SAVE_PATH) if SAVE_PATH else os.path.join(data_dir, "plots.pdf")
 
     if not os.path.isdir(data_dir):
         print(f"Error: data directory not found: {data_dir}", file=sys.stderr)
@@ -1268,11 +1263,11 @@ def main() -> int:
         return 1
 
     with PdfPages(out_pdf) as pdf:
-        add_repro_pages(pdf, run_dir, data_dir, inst_path, args.spop_prefix, not args.latest_spop)
-        add_instruction_usage_pages(pdf, run_dir, data_dir, inst_path, args.spop_prefix, not args.latest_spop)
+        add_repro_pages(pdf, run_dir, data_dir, inst_path, SPOP_PREFIX, not USE_LATEST_SPOP)
+        add_instruction_usage_pages(pdf, run_dir, data_dir, inst_path, SPOP_PREFIX, not USE_LATEST_SPOP)
         add_movement_behavior_pages(pdf, run_dir, data_dir)
         add_gradient_pages(pdf, run_dir, data_dir)
-        add_non_overlap_pages(pdf, data_dir, args.allow_live_fitness_fallback)
+        add_non_overlap_pages(pdf, data_dir, ALLOW_LIVE_FITNESS_FALLBACK)
 
     print(f"Wrote {out_pdf}")
     return 0

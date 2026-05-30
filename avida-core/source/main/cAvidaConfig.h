@@ -685,7 +685,7 @@ public:
   CONFIG_ADD_VAR(ENERGY_THRESH_HIGH, double, .75, "Threshold percent above which energy level is considered high.  Requires ENERGY_CAP.");
   CONFIG_ADD_VAR(ENERGY_COMPARISON_EPSILON, double, 0.0, "Percent difference (relative to executing organism) required in energy level comparisons");
   CONFIG_ADD_VAR(ENERGY_REQUEST_RADIUS, int, 1, "Radius of broadcast energy request messages.");
-  CONFIG_ADD_VAR(FLAT_ENERGY_COST_PER_INST, double, 0.0, "Flat energy deducted per instruction executed (maintenance cost).\n0 = disabled (use per-instruction-type costs from instset.cfg instead).\nWhen > 0, every instruction costs this fixed amount regardless of type.\nOrganism dies if energy drops below this cost.");
+  CONFIG_ADD_VAR(FLAT_ENERGY_COST_PER_INST, double, 0.0, "Fraction of current merit deducted as energy per instruction executed (maintenance cost).\n0 = disabled (use per-instruction-type costs from instset.cfg instead).\nWhen > 0, every instruction costs this fraction of the organism's current merit regardless of type.\nOrganism dies if energy drops below this cost.");
 	
 
   // -------- Energy Sharing config options --------

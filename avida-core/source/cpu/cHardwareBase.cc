@@ -56,17 +56,17 @@ cHardwareBase::cHardwareBase(cWorld* world, cOrganism* in_organism, cInstSet* in
 {
 	m_task_switching_cost=0;
 	int switch_cost =  world->GetConfig().TASK_SWITCH_PENALTY.Get();
-	// FLAT_ENERGY_COST_PER_INST is a global maintenance cost paid in
-	// SingleProcess_PayPreCosts. It is not declared per instruction in the
-	// instruction set, so HasEnergyCosts() / HasCosts() do not see it. Without
-	// this term, an organism with an instruction set that has no per-inst costs
-	// would skip PayPreCosts entirely and never pay the flat energy tax,
-	// trivially balancing reproduction at R0=1 (parent's energy never decays
-	// from the offspring packet) and breaking selection.
-	const bool has_flat_energy_cost = (world->GetConfig().ENERGY_ENABLED.Get() > 0 &&
-	                                   world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get() > 0.0);
+	// FLAT_ENERGY_COST_PER_INST is a global merit-proportional maintenance
+	// cost paid in SingleProcess_PayPreCosts. It is not declared per
+	// instruction in the instruction set, so HasEnergyCosts() / HasCosts() do
+	// not see it. Without this term, an organism with an instruction set that
+	// has no per-inst costs would skip PayPreCosts entirely and never pay the
+	// maintenance tax, trivially balancing reproduction at R0=1 (parent's
+	// energy never decays from the offspring packet) and breaking selection.
+	const bool has_maintenance_energy_cost = (world->GetConfig().ENERGY_ENABLED.Get() > 0 &&
+	                                          world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get() > 0.0);
 	m_has_any_costs = (m_has_costs | m_has_ft_costs | m_has_energy_costs | m_has_res_costs | m_has_fem_res_costs | switch_cost | m_has_female_costs | 
-                     m_has_choosy_female_costs | m_has_post_costs | m_has_bonus_costs | (has_flat_energy_cost ? 1 : 0));
+                     m_has_choosy_female_costs | m_has_post_costs | m_has_bonus_costs | (has_maintenance_energy_cost ? 1 : 0));
   m_implicit_repro_active = (m_world->GetConfig().IMPLICIT_REPRO_TIME.Get() ||
                              m_world->GetConfig().IMPLICIT_REPRO_CPU_CYCLES.Get() ||
                              m_world->GetConfig().IMPLICIT_REPRO_BONUS.Get() ||
@@ -1283,10 +1283,12 @@ bool cHardwareBase::SingleProcess_PayPreCosts(cAvidaContext& ctx, const Instruct
       }
     }
 
-    double flat_cost = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
-    if (flat_cost > 0.0) {
-      if (m_organism->GetPhenotype().GetStoredEnergy() >= flat_cost) {
-        m_organism->GetPhenotype().ReduceEnergy(flat_cost);
+    const double merit_cost_fraction = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
+    if (merit_cost_fraction > 0.0) {
+      const double merit_scaled_cost =
+        merit_cost_fraction * m_organism->GetPhenotype().GetMerit().GetDouble();
+      if (m_organism->GetPhenotype().GetStoredEnergy() >= merit_scaled_cost) {
+        m_organism->GetPhenotype().ReduceEnergy(merit_scaled_cost);
       } else {
         m_organism->GetPhenotype().SetToDie();
         return false;

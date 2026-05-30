@@ -19,7 +19,7 @@ output, R0):
   divides the champion achieved during evolution. R0 = 2 means the lineage
   reproduced twice; R0 = 0 means it never divided. It does *not* measure
   motion -- with ``ENERGY_GIVEN_ON_INJECT 60`` and
-  ``FLAT_ENERGY_COST_PER_INST 0.005`` a sit-still founder still has budget
+  ``FLAT_ENERGY_COST_PER_INST 0.00005`` a sit-still founder still has budget
   to execute ``repro`` once or twice before starving.
 * The replay below is a behavioral assay: it injects this genome into a
   fresh world with the same ``environment.cfg`` and watches the trajectory.
