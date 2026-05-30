@@ -83,7 +83,7 @@ extern void TCMalloc_MESSAGE(const char* filename,
 // a literal string with no %<whatever> format directives.
 #ifdef TCMALLOC_WARNINGS
 #define MESSAGE(message, num_bytes)                                     \
-   TCMalloc_MESSAGE(__FILE__, __LINE__, message " (%"PRIuS" bytes)\n",  \
+   TCMalloc_MESSAGE(__FILE__, __LINE__, message " (%" PRIuS " bytes)\n",  \
                     static_cast<size_t>(num_bytes))
 #else
 #define MESSAGE(message, num_bytes)

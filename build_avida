@@ -9,7 +9,7 @@ do_build() {
   (
     mkdir -p cbuild
     cd cbuild
-    cmake "$@" ../
+    cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@" ../
     make -j 10 install
   )
 }

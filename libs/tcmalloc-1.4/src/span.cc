@@ -114,7 +114,7 @@ int DLL_Length(const Span* list) {
 void DLL_Print(const char* label, const Span* list) {
   MESSAGE("%-10s %p:", label, list);
   for (const Span* s = list->next; s != list; s = s->next) {
-    MESSAGE(" <%p,%"PRIuPTR",%"PRIuPTR">", s, s->start, s->length);
+    MESSAGE(" <%p,%" PRIuPTR ",%" PRIuPTR ">", s, s->start, s->length);
   }
   MESSAGE("%s\n", "");  // %s is to get around a compiler error.
 }
