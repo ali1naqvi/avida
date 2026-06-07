@@ -3424,7 +3424,8 @@ bool cHardwareCPU::Inst_Repro(cAvidaContext& ctx)
   const bool energy_enabled = m_world->GetConfig().ENERGY_ENABLED.Get();
   const double per_off = energy_enabled ? m_world->GetConfig().REPRO_ENERGY_PER_OFFSPRING.Get() : 0.0;
   if (energy_enabled && per_off > 0.0) {
-    m_organism->GetPhenotype().SetOffspringEnergyPacketOverride(per_off);
+    const double env_energy_scale = m_world->GetEnvironment().GetMaxEnergyReward();
+    m_organism->GetPhenotype().SetOffspringEnergyPacketOverride(per_off * env_energy_scale);
   }
 
   const bool parent_alive = m_organism->ActivateDivide(ctx);

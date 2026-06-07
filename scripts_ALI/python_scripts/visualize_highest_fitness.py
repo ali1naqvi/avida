@@ -582,9 +582,9 @@ def setup_replay(org_path, replay_dir, world_x, world_y, num_updates=500, allow_
         "OFFSPRING_WORLD_POS":   "0",
         # Do not override AGE_LIMIT / DEATH_METHOD — replay uses same lifespan rules
         # as the main experiment (see replay_updates_for_lifespan).
-        # Match the experiment's bounded/blocked edge behavior. Using open
-        # boundaries here can make replay paths diverge near the world edge.
-        "DEADLY_BOUNDARIES":    "2",
+        # Visualization replay: remove deadly/blocked boundaries so movement
+        # can wrap through world edges.
+        "DEADLY_BOUNDARIES":    "0",
         # Keep REQUIRED_TASK as original (-1 = no required task)
         "REQUIRED_TASK":        "-1",
     }

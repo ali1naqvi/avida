@@ -56,7 +56,7 @@ cHardwareBase::cHardwareBase(cWorld* world, cOrganism* in_organism, cInstSet* in
 {
 	m_task_switching_cost=0;
 	int switch_cost =  world->GetConfig().TASK_SWITCH_PENALTY.Get();
-	// FLAT_ENERGY_COST_PER_INST is a global merit-proportional maintenance
+	// FLAT_ENERGY_COST_PER_INST is a global environment-normalized maintenance
 	// cost paid in SingleProcess_PayPreCosts. It is not declared per
 	// instruction in the instruction set, so HasEnergyCosts() / HasCosts() do
 	// not see it. Without this term, an organism with an instruction set that
@@ -1283,12 +1283,12 @@ bool cHardwareBase::SingleProcess_PayPreCosts(cAvidaContext& ctx, const Instruct
       }
     }
 
-    const double merit_cost_fraction = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
-    if (merit_cost_fraction > 0.0) {
-      const double merit_scaled_cost =
-        merit_cost_fraction * m_organism->GetPhenotype().GetMerit().GetDouble();
-      if (m_organism->GetPhenotype().GetStoredEnergy() >= merit_scaled_cost) {
-        m_organism->GetPhenotype().ReduceEnergy(merit_scaled_cost);
+    const double env_cost_fraction = m_world->GetConfig().FLAT_ENERGY_COST_PER_INST.Get();
+    if (env_cost_fraction > 0.0) {
+      const double env_energy_scale = m_world->GetEnvironment().GetMaxEnergyReward();
+      const double env_scaled_cost = env_cost_fraction * env_energy_scale;
+      if (m_organism->GetPhenotype().GetStoredEnergy() >= env_scaled_cost) {
+        m_organism->GetPhenotype().ReduceEnergy(env_scaled_cost);
       } else {
         m_organism->GetPhenotype().SetToDie();
         return false;

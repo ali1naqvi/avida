@@ -391,8 +391,8 @@ public:
   CONFIG_ADD_VAR(INHERIT_MULTITHREAD, int, 0, "Should offspring of parents with multiple threads be marked multithreaded?");
   CONFIG_ADD_ALIAS(INHERIT_MULTI_THREAD_CLASSIFICATION);
   CONFIG_ADD_VAR(DIVIDE_SEMEL_OFFSPRING, int, 2, "Number of offspring produced by divide-semel (semelparous division).\nParent donates all energy equally and dies.\nOnly used when SEMEL_ENERGY_PER_OFFSPRING <= 0 (legacy fixed-N mode).");
-  CONFIG_ADD_VAR(REPRO_ENERGY_PER_OFFSPRING, double, 0.0, "Fixed offspring energy packet for iteroparous repro when > 0 and ENERGY_ENABLED.\nIf <= 0 (default), use the standard fractional parent-energy birth model.");
-  CONFIG_ADD_VAR(SEMEL_ENERGY_PER_OFFSPRING, double, 0.0, "Propagule energy: if > 0 and ENERGY_ENABLED, semel offspring count = floor(parent_energy / child_packet).\nThe child packet is SEMEL_ENERGY_PER_OFFSPRING plus ENERGY_GIVEN_AT_BIRTH, independent of MIN_ENERGY_TO_REPRODUCE.\nAny remainder is lost when the parent dies. If <= 0 (default): use fixed DIVIDE_SEMEL_OFFSPRING with even energy split (legacy behavior).");
+  CONFIG_ADD_VAR(REPRO_ENERGY_PER_OFFSPRING, double, 0.0, "Fraction of the maximum configured environmental energy reward paid as the offspring energy packet for iteroparous repro when > 0 and ENERGY_ENABLED.\nIf <= 0 (default), use the standard fractional parent-energy birth model.");
+  CONFIG_ADD_VAR(SEMEL_ENERGY_PER_OFFSPRING, double, 0.0, "Propagule fraction: if > 0 and ENERGY_ENABLED, semel offspring count = floor(parent_energy / child_packet).\nThe child packet is SEMEL_ENERGY_PER_OFFSPRING * max environmental energy reward plus ENERGY_GIVEN_AT_BIRTH, independent of MIN_ENERGY_TO_REPRODUCE.\nAny remainder is lost when the parent dies. If <= 0 (default): use fixed DIVIDE_SEMEL_OFFSPRING with even energy split (legacy behavior).");
   CONFIG_ADD_VAR(SEMEL_MAX_OFFSPRING, int, -1, "Max offspring cap for energy-scaled semelparity (SEMEL_ENERGY_PER_OFFSPRING > 0).\n-1 = no cap.");
   CONFIG_ADD_VAR(SEMEL_MIN_OFFSPRING, int, 1, "Minimum viable brood size for energy-scaled semelparity.\nIf computed num_offspring < this, behavior is controlled by SEMEL_INSUFFICIENT_ENERGY_DIES.");
   CONFIG_ADD_VAR(SEMEL_INSUFFICIENT_ENERGY_DIES, int, 0, "If 1 and SEMEL_ENERGY_PER_OFFSPRING > 0: parent dies when energy cannot fund SEMEL_MIN_OFFSPRING offspring (all-in spawning, e.g. salmon).\nIf 0 (default): parent survives with energy intact and may try again later (bounded by AGE_LIMIT/DEATH_METHOD).");
@@ -685,7 +685,7 @@ public:
   CONFIG_ADD_VAR(ENERGY_THRESH_HIGH, double, .75, "Threshold percent above which energy level is considered high.  Requires ENERGY_CAP.");
   CONFIG_ADD_VAR(ENERGY_COMPARISON_EPSILON, double, 0.0, "Percent difference (relative to executing organism) required in energy level comparisons");
   CONFIG_ADD_VAR(ENERGY_REQUEST_RADIUS, int, 1, "Radius of broadcast energy request messages.");
-  CONFIG_ADD_VAR(FLAT_ENERGY_COST_PER_INST, double, 0.0, "Fraction of current merit deducted as energy per instruction executed (maintenance cost).\n0 = disabled (use per-instruction-type costs from instset.cfg instead).\nWhen > 0, every instruction costs this fraction of the organism's current merit regardless of type.\nOrganism dies if energy drops below this cost.");
+  CONFIG_ADD_VAR(FLAT_ENERGY_COST_PER_INST, double, 0.0, "Fraction of the maximum configured environmental energy reward deducted as energy per instruction executed (maintenance cost).\n0 = disabled (use per-instruction-type costs from instset.cfg instead).\nWhen > 0, every instruction costs this environment-normalized amount regardless of type.\nOrganism dies if energy drops below this cost.");
 	
 
   // -------- Energy Sharing config options --------

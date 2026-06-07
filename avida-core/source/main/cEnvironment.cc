@@ -139,6 +139,31 @@ bool cEnvironment::AssertInputValid(void* input, const cString& name, const cStr
   return true;
 }
 
+double cEnvironment::GetMaxEnergyReward() const
+{
+  double max_reward = 0.0;
+  const int num_reactions = reaction_lib.GetSize();
+
+  for (int reaction_id = 0; reaction_id < num_reactions; reaction_id++) {
+    const cReaction* reaction = reaction_lib.GetReaction(reaction_id);
+    if (reaction == NULL) continue;
+
+    const tList<cReactionProcess>& process_list = reaction->GetProcesses();
+    tLWConstListIterator<cReactionProcess> process_it(process_list);
+    const int num_processes = process_list.GetSize();
+
+    for (int process_id = 0; process_id < num_processes; process_id++) {
+      const cReactionProcess* process = process_it.Next();
+      if (process == NULL || process->GetType() != nReaction::PROCTYPE_ENERGY) continue;
+
+      const double reward = process->GetMaxNumber() * process->GetValue();
+      if (reward > max_reward) max_reward = reward;
+    }
+  }
+
+  return max_reward;
+}
+
 bool cEnvironment::LoadReactionProcess(cReaction* reaction, cString desc, Feedback& feedback)
 {
   cReactionProcess* new_process = reaction->AddProcess();

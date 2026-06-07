@@ -123,6 +123,7 @@ public:
   const cResourceLib& GetResourceLib() const { return resource_lib; }
   const cReactionLib& GetReactionLib() const { return reaction_lib; }
   const cMutationRates& GetMutRates() const { return mut_rates; }
+  double GetMaxEnergyReward() const;
 
   cResourceLib& GetResourceLib() { return resource_lib; }
   cReactionLib& GetReactionLib() { return reaction_lib; }

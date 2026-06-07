@@ -19,6 +19,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 WORK_DIR = os.path.join(REPO_ROOT, "work")
 
 TEST_RUNS = [
+    "ecology_test_relative_cost_fast_run_*",
+    "ecology_test_relative_cost_medium_run_*",
+    "ecology_test_relative_cost_slow_run_*",
     "ecology_test_1_fast_run_*",
     "ecology_test_1_medium_run_*",
     "ecology_test_1_slow_run_*",
@@ -30,6 +33,9 @@ TEST_RUNS = [
 # Optional display names for x-axis labels. The keys should match the group names
 # created from the run folders, such as ecology_test_1_fast.
 X_AXIS_LABELS = {
+    "ecology_test_relative_cost_fast": "Non-overlapping 200 RC",
+    "ecology_test_relative_cost_medium": "Non-overlapping 500 RC",
+    "ecology_test_relative_cost_slow": "Non-overlapping 1000 RC",
     "ecology_test_1_fast": "Non-overlapping 200",
     "ecology_test_1_medium": "Non-overlapping 500",
     "ecology_test_1_slow": "Non-overlapping 1000",
