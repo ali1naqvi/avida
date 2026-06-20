@@ -447,6 +447,7 @@ tInstLib<cHardwareCPU::tMethod>* cHardwareCPU::initInstLib(void)
 		tInstLibEntry<tMethod>("repro_deme", &cHardwareCPU::Inst_ReproDeme, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro", &cHardwareCPU::Inst_Repro, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-semel", &cHardwareCPU::Inst_ReproSemel, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
+    tInstLibEntry<tMethod>("stop", &cHardwareCPU::Inst_Stop, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-sex", &cHardwareCPU::Inst_ReproSex, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-germ-flag", &cHardwareCPU::Inst_ReproGermFlag, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
     tInstLibEntry<tMethod>("repro-A", &cHardwareCPU::Inst_Repro, INST_CLASS_LIFECYCLE, nInstFlag::STALL),
@@ -622,6 +623,7 @@ tInstLib<cHardwareCPU::tMethod>* cHardwareCPU::initInstLib(void)
     tInstLibEntry<tMethod>("pherotoggle", &cHardwareCPU::Inst_PheroToggle),
     tInstLibEntry<tMethod>("sense-target", &cHardwareCPU::Inst_SenseTarget),
     tInstLibEntry<tMethod>("sense-target-faced", &cHardwareCPU::Inst_SenseTargetFaced),
+    tInstLibEntry<tMethod>("sense-faced-individual", &cHardwareCPU::Inst_SenseFacedIndividual, INST_CLASS_ENVIRONMENT, nInstFlag::STALL),
     tInstLibEntry<tMethod>("sensef", &cHardwareCPU::Inst_SenseLog2Facing),
     tInstLibEntry<tMethod>("sensef-unit", &cHardwareCPU::Inst_SenseUnitFacing),
     tInstLibEntry<tMethod>("sensef-m100", &cHardwareCPU::Inst_SenseMult100Facing),
@@ -3360,6 +3362,11 @@ bool cHardwareCPU::Inst_ReproDeme(cAvidaContext&)
   // this function will become to depend on a predicate, but I am still thinking of how to do this (BEB)
   sourceDeme->ReplicateDeme(); 
   return true;
+}
+
+bool cHardwareCPU::Inst_Stop(cAvidaContext& ctx)
+{
+  return m_world->GetPopulation().MarkGenerationSelectionStop(ctx, m_organism);
 }
 
 bool cHardwareCPU::Inst_Repro(cAvidaContext& ctx)
@@ -8696,6 +8703,13 @@ bool cHardwareCPU::Inst_SenseTargetFaced(cAvidaContext&)
   
   return true;
 } //End Inst_SenseTargetFaced()
+
+bool cHardwareCPU::Inst_SenseFacedIndividual(cAvidaContext&)
+{
+  const int reg_to_set = FindModifiedRegister(REG_BX);
+  GetRegister(reg_to_set) = m_organism->GetOrgInterface().IsFacedWorldCellOccupied() ? 1 : 0;
+  return true;
+}
 
 
 // DoSensePheromone -- modified version of DoSense to only sense from

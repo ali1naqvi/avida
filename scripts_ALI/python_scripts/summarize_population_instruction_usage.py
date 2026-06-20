@@ -23,29 +23,19 @@ WORK_DIR = os.path.join(REPO_ROOT, "work")
 OUTPUT_DIR = os.path.join(REPO_ROOT, "scripts_ALI", "python_scripts", "outputs")
 
 TEST_RUNS = [
-    "ecology_test_relative_cost_fast_run_*",
-    "ecology_test_relative_cost_medium_run_*",
-    "ecology_test_relative_cost_slow_run_*",
-    "ecology_test_1_fast_run_*",
-    "ecology_test_1_medium_run_*",
-    "ecology_test_1_slow_run_*",
-    "ecology_test_2_fast_run_*",
-    "ecology_test_2_medium_run_*",
-    "ecology_test_2_slow_run_*",
+    "ecology_test_over_flash_run_*",
+    "ecology_test_over_fast_run_*",
+    "ecology_test_over_medium_run*",
+    "ecology_test_over_slow_run*"
 ]
 
 # Optional display names for x-axis labels. The keys should match the group names
 # created from the run folders, such as ecology_test_1_fast.
 X_AXIS_LABELS = {
-    "ecology_test_relative_cost_fast": "Non-overlapping 200 RC",
-    "ecology_test_relative_cost_medium": "Non-overlapping 500 RC",
-    "ecology_test_relative_cost_slow": "Non-overlapping 1000 RC",
-    "ecology_test_1_fast": "Non-overlapping 200",
-    "ecology_test_1_medium": "Non-overlapping 500",
-    "ecology_test_1_slow": "Non-overlapping 1000",
-    "ecology_test_2_fast": "Overlapping 200",
-    "ecology_test_2_medium": "Overlapping 500",
-    "ecology_test_2_slow": "Overlapping 1000",
+    "ecology_test_over_flash": "Overlapping 20",
+    "ecology_test_over_fast": "Overlapping 50",
+    "ecology_test_over_medium": "Overlapping 200",
+    "ecology_test_2_slow": "Overlapping 500",
 }
 
 CSV_NAME = "population_instruction_usage_largest_updates.csv"

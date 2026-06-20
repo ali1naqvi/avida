@@ -462,6 +462,7 @@ private:
   bool Inst_ReproDeme(cAvidaContext& ctx);
   bool Inst_Repro(cAvidaContext& ctx);
   bool Inst_ReproSemel(cAvidaContext& ctx);
+  bool Inst_Stop(cAvidaContext& ctx);
   bool Inst_ReproSex(cAvidaContext& ctx);
   bool Inst_ReproGermFlag(cAvidaContext& ctx);
   bool Inst_TaskPutRepro(cAvidaContext& ctx);
@@ -863,6 +864,7 @@ private:
   bool Inst_SenseMult100Facing(cAvidaContext& ctx);
   bool Inst_SenseTarget(cAvidaContext& ctx);
   bool Inst_SenseTargetFaced(cAvidaContext& ctx);
+  bool Inst_SenseFacedIndividual(cAvidaContext& ctx);
   bool DoSensePheromone(cAvidaContext& ctx, int cellid);
   bool DoSensePheromoneInDemeGlobal(cAvidaContext& ctx, tRegisters REG_DEFAULT);
   bool DoSensePheromoneGlobal(cAvidaContext& ctx, tRegisters REG_DEFAULT);
@@ -1134,5 +1136,3 @@ inline void cHardwareCPU::SwitchStack()
 }
 
 #endif
-
-

@@ -101,6 +101,7 @@ public:
   bool DivideSemel(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome, int num_offspring);
   cOrganism* GetNeighbor();
   bool IsNeighborCellOccupied();
+  bool IsFacedWorldCellOccupied();
   int GetNumNeighbors();
   void GetNeighborhoodCellIDs(Apto::Array<int>& list);
   void GetAVNeighborhoodCellIDs(Apto::Array<int>& list, int av_num = 0);

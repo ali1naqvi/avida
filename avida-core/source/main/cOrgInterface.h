@@ -94,6 +94,7 @@ public:
 
   virtual cOrganism* GetNeighbor() = 0;
   virtual bool IsNeighborCellOccupied() = 0;
+  virtual bool IsFacedWorldCellOccupied() = 0;
   virtual int GetNumNeighbors() = 0;
   virtual void GetNeighborhoodCellIDs(Apto::Array<int>& list) = 0;
   virtual void GetAVNeighborhoodCellIDs(Apto::Array<int>& list, int av_num = 0) = 0;

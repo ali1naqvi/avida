@@ -92,6 +92,7 @@ public:
   bool DivideSemel(cAvidaContext& ctx, cOrganism* parent, const Genome& offspring_genome, int num_offspring) { return false; }
   cOrganism* GetNeighbor() { return NULL; }
   bool IsNeighborCellOccupied() { return false; }
+  bool IsFacedWorldCellOccupied() { return false; }
   int GetNumNeighbors() { return 0; }
   void GetNeighborhoodCellIDs(Apto::Array<int>& list) { ; }
   void GetAVNeighborhoodCellIDs(Apto::Array<int>& list, int av_num = 0) { ; }

@@ -412,7 +412,7 @@ mgr->Register(name, activate); \
   m_data_manager.Add("ave_neutral",    "Average Neutral Metric",           &cStats::GetAveNeutralMetric);
   m_data_manager.Add("ave_lineage",    "Average Lineage Label",            &cStats::GetAveLineageLabel);
   m_data_manager.Add("ave_gest",       "Average Gestation Time",           &cStats::GetAveGestation);
-  m_data_manager.Add("ave_fitness",    "Average Fitness",                  &cStats::GetAveFitness);
+  m_data_manager.Add("ave_fitness",    "Average Stored Energy",            &cStats::GetAveFitness);
   m_data_manager.Add("ave_copy_length","Average Copied Length",            &cStats::GetAveCopySize);
   m_data_manager.Add("ave_exe_length", "Average Executed Length",          &cStats::GetAveExeSize);
   
@@ -422,26 +422,26 @@ mgr->Register(name, activate); \
   PROVIDE("core.world.ave_metabolic_rate", "Average Metabolic Rate",               double, GetAveMerit);
   PROVIDE("core.world.ave_age",            "Average Organism Age (in updates)",    double, GetAveCreatureAge);
   PROVIDE("core.world.ave_gestation_time", "Average Gestation Time",               double, GetAveGestation);
-  PROVIDE("core.world.ave_fitness",        "Average Fitness",                      double, GetAveFitness);
+  PROVIDE("core.world.ave_fitness",        "Average Stored Energy",                double, GetAveFitness);
   
   
-  m_data_manager.Add("ave_fitness_dead", "Mean terminal fitness among deaths (last update)",
+  m_data_manager.Add("ave_fitness_dead", "Mean stored energy among deaths (last update)",
                        &cStats::GetAveFitnessAtDeath);
-  m_data_manager.Add("max_fitness_dead", "Max terminal fitness among deaths (last update)",
+  m_data_manager.Add("max_fitness_dead", "Max stored energy among deaths (last update)",
                        &cStats::GetMaxFitnessAtDeath);
   m_data_manager.Add("death_fitness_n", "Deaths counted toward ave/max_fitness_dead",
                        &cStats::GetDeathFitnessSampleCount);
   
-  PROVIDE("core.world.ave_fitness_dead", "Mean fitness at death (last completed update)", double, GetAveFitnessAtDeath);
-  PROVIDE("core.world.max_fitness_dead", "Max fitness at death (last completed update)", double, GetMaxFitnessAtDeath);
+  PROVIDE("core.world.ave_fitness_dead", "Mean stored energy at death (last completed update)", double, GetAveFitnessAtDeath);
+  PROVIDE("core.world.max_fitness_dead", "Max stored energy at death (last completed update)", double, GetMaxFitnessAtDeath);
   
   // Maximums
-  m_data_manager.Add("max_fitness", "Maximum Fitness in Population", &cStats::GetMaxFitness);
+  m_data_manager.Add("max_fitness", "Maximum Stored Energy in Population", &cStats::GetMaxFitness);
   m_data_manager.Add("max_merit",   "Maximum Merit in Population",   &cStats::GetMaxMerit);
   
   
   // Minimums
-  m_data_manager.Add("min_fitness", "Minimum Fitness in Population", &cStats::GetMinFitness);
+  m_data_manager.Add("min_fitness", "Minimum Stored Energy in Population", &cStats::GetMinFitness);
   
   
   

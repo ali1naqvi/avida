@@ -1,30 +1,4 @@
 #!/usr/bin/env python3
-"""
-Visualize a high-fitness organism's movement through the environment
-
-This script:
-1. Picks a genotype from dominant.dat — by default the row with the highest
-   recorded fitness (max of average vs max-fitness columns for that snapshot).
-   Use --selection last to use the final dominant instead.
-2. Places it alone in a fresh copy of the environment (same death rules as
-   avida.cfg: no artificial AGE_LIMIT extension).
-3. Runs avida for a number of updates (see --updates / --strict-lifespan below).
-4. Animates its path overlaid on the food gradient
-
-Why runs can look "weird":
-  - DEATH_METHOD 2 + AGE_LIMIT 1 ⇒ only ~genome_length total instructions of life
-    (often ~100 updates). By default this script now replays only that true
-    lifespan; use --min-observation-updates or --updates to force a longer clip.
-  - BIRTH_METHOD 4 (mass action) + reproduction ⇒ brief multi-org states; replay
-    forces local empty-cell birth + ALLOW_PARENT 0 to keep a single moving body.
-
-Usage:
-    cd chemotaxis
-    python3 visualize_dominant.py
-    python3 visualize_dominant.py --save path.gif
-    python3 visualize_dominant.py --org data/archive/125-aabev.org
-    python3 visualize_dominant.py --selection last --updates 800
-"""
 
 from __future__ import annotations
 

@@ -1228,6 +1228,7 @@ private:
   cString m_genome_filename;
   cString m_data_filename;
   double m_best_fitness;
+  bool m_write_current_best;
 
 public:
   cActionPrintChampionGenotype(cWorld* world, const cString& args, Feedback&)
@@ -1235,51 +1236,43 @@ public:
     , m_genome_filename("champion.org")
     , m_data_filename("champion.dat")
     , m_best_fitness(-1.0)
+    , m_write_current_best(false)
   {
     cString largs(args);
     largs.Trim();
     if (largs.GetSize()) m_genome_filename = largs.PopWord();
     if (largs.GetSize()) m_data_filename = largs.PopWord();
+    if (largs.GetSize()) {
+      cString mode = largs.PopWord();
+      mode.ToLower();
+      m_write_current_best = (mode == "current" || mode == "always" || mode == "force");
+    }
   }
 
-  static const cString GetDescription() { return "Arguments: [string genome_fname=\"champion.org\"] [string data_fname=\"champion.dat\"]"; }
+  static const cString GetDescription() { return "Arguments: [string genome_fname=\"champion.org\"] [string data_fname=\"champion.dat\"] [string mode=\"all_time\"|\"current\"]"; }
 
   void Process(cAvidaContext& ctx)
   {
-    // Always pick the highest-fitness LIVE organism. Previously, under
-    // FITNESS_METHOD=3 we also scanned every genotype the systematics arbiter
-    // had ever seen (including extinct lineages) and replaced best_org with
-    // NULL whenever one of them had a higher historical max_fitness. That
-    // produced a champion.dat full of -1 sentinel rows and a champion.org
-    // dumped from a phantom genotype with no live position, which is exactly
-    // why TestCPU replay reports Fitness=0 / Offspring=NONE for a "champion"
-    // that was supposedly accumulating fitness in the live run.
-    //
-    // Picking the live org also makes the movement diagnostic below
-    // (Easterly / Northerly / |E|+|N|) meaningful: it answers "did the
-    // best individual actually move?" directly from the run, separately
-    // from whatever TestCPU does with the genome.
+    // Always pick the highest-stored-energy LIVE organism.
     cPopulation& pop = m_world->GetPopulation();
     const Apto::Array<cOrganism*, Apto::Smart>& live_orgs = pop.GetLiveOrgList();
     cOrganism* best_org = NULL;
-    double best_fitness = m_best_fitness;
+    double best_energy = m_write_current_best ? -1.0 : m_best_fitness;
 
     for (int i = 0; i < live_orgs.GetSize(); i++) {
       cOrganism* org = live_orgs[i];
       if (org == NULL || org->IsDead()) continue;
 
-      // FITNESS_METHOD 3: rank by this organism's own R_0 tally only (same as
-      // cPopulation aggregate stats). Juveniles stay at 0 until they reproduce.
-      const double cur_fitness = org->GetPhenotype().GetFitness();
-      if (cur_fitness > best_fitness) {
-        best_fitness = cur_fitness;
+      const double cur_energy = org->GetPhenotype().GetStoredEnergy();
+      if (cur_energy > best_energy) {
+        best_energy = cur_energy;
         best_org = org;
       }
     }
 
     if (best_org == NULL) return;
 
-    m_best_fitness = best_fitness;
+    m_best_fitness = best_energy;
     Systematics::GroupPtr genotype = best_org->SystematicsGroup("genotype");
     const int genotype_id = genotype ? genotype->ID() : -1;
     const cString genotype_name = genotype ? genotype->Properties().Get("name").StringValue() : cString("");
@@ -1309,12 +1302,16 @@ public:
 
     Avida::Output::FilePtr df = Avida::Output::File::StaticWithPath(m_world->GetNewWorld(), (const char*)m_data_filename);
     df->WriteComment("Avida Champion Data");
-    df->WriteComment("A champion is recorded only when a new all-time highest LIVE organism fitness is observed.");
+    if (m_write_current_best) {
+      df->WriteComment("A champion is recorded each time this action runs: the current highest LIVE organism stored energy.");
+    } else {
+      df->WriteComment("A champion is recorded only when a new all-time highest LIVE organism stored energy is observed.");
+    }
     df->WriteComment("EnvCellID/EnvX/EnvY are the org's decoupled environment-grid position (food access).");
     df->WriteComment("Easterly/Northerly are signed step counters; StepDisp=|E|+|N| is a lower bound on moves performed.");
     df->WriteTimeStamp();
     df->Write(m_world->GetStats().GetUpdate(), "Update");
-    df->Write(best_fitness, "Champion Fitness");
+    df->Write(best_energy, "Champion Energy");
     const cPhenotype& phenotype = best_org->GetPhenotype();
     df->Write(best_org->GetID(), "Organism ID");
     df->Write(pop_cell_id, "Pop Cell ID");
@@ -1376,20 +1373,19 @@ public:
   {
     cPopulation& pop = m_world->GetPopulation();
     const cPopulation::LifetimeFitnessChampion& rec = pop.GetLifetimeFitnessChampion();
-    if (!rec.valid || rec.fitness <= m_best_fitness) return;
+    if (!rec.valid || rec.stored_energy <= m_best_fitness) return;
 
-    m_best_fitness = rec.fitness;
+    m_best_fitness = rec.stored_energy;
     const int step_disp = std::abs(rec.easterly) + std::abs(rec.northerly);
 
     Avida::Output::FilePtr df = Avida::Output::File::StaticWithPath(m_world->GetNewWorld(), (const char*)m_data_filename);
-    df->WriteComment("Avida Lifetime Fitness Champion Data");
-    df->WriteComment("A record is written when an individual achieves a new all-time highest lifetime reproductive output (R0).");
-    df->WriteComment("For repro-semel, the parent is recorded during reproduction before it dies.");
+    df->WriteComment("Avida Lifetime Energy Champion Data");
+    df->WriteComment("A record is written when an individual achieves a new all-time highest stored energy.");
     df->WriteComment("EnvCellID/EnvX/EnvY are the org's decoupled environment-grid position (food access).");
     df->WriteComment("Easterly/Northerly are signed step counters; StepDisp=|E|+|N| is a lower bound on moves performed.");
     df->WriteTimeStamp();
     df->Write(rec.update, "Update");
-    df->Write(rec.fitness, "Lifetime Fitness");
+    df->Write(rec.stored_energy, "Lifetime Energy");
     df->Write(rec.org_id, "Organism ID");
     df->Write(rec.pop_cell_id, "Pop Cell ID");
     df->Write(rec.env_cell_id, "Env Cell ID");
@@ -4939,12 +4935,12 @@ public:
     
     bool use_av = m_world->GetConfig().USE_AVATARS.Get();
     if (!use_av) {
-      if (m_use_env_pos) fp << "# org_id,org_envx,org_envy,org_forage_target,org_group_id,org_facing" << endl;
-      else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing" << endl;
+      if (m_use_env_pos) fp << "# org_id,org_envx,org_envy,org_forage_target,org_group_id,org_facing,stored_energy" << endl;
+      else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing,stored_energy" << endl;
     }
     else {
-      if (m_use_env_pos) fp << "# org_id,org_envx,org_envy,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing" << endl;
-      else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing" << endl;
+      if (m_use_env_pos) fp << "# org_id,org_envx,org_envy,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing,stored_energy" << endl;
+      else fp << "# org_id,org_cellx,org_celly,org_forage_target,org_group_id,org_facing,av_cellx,av_celly,av_facing,stored_energy" << endl;
     }
     
     cPopulation& pop = m_world->GetPopulation();
@@ -4977,6 +4973,7 @@ public:
         
         fp << "," << avlocx << "," << avlocy << "," << avfaced_dir;
       }
+      fp << "," << org->GetPhenotype().GetStoredEnergy();
       fp << endl;
     }
   }

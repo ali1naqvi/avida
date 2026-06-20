@@ -5,15 +5,15 @@ from mpl_toolkits.mplot3d import Axes3D
 
 GRID_SIZE       = 50    # Grid dimensions (N x N), no hard boundaries (toroidal)
 HEIGHT          = 80    # Peak concentration value
-SPREAD          = 30    # Distance from peak at which value reaches zero
+SPREAD          = 35    # Distance from peak at which value reaches zero
 PLATEAU         = -1    # Flat plateau radius around peak (-1 = no plateau)
 DECAY           = 1.0   # Decay multiplier (scales the falloff rate)
 MOVE_A_SCALER   = 1.0   # Movement scalar (for agent-based use, kept for reference)
 PEAK_X          = 25    # X-coordinate of the concentration peak
 PEAK_Y          = 25    # Y-coordinate of the concentration peak
-MAX_X           = 30    # Right edge of plateau region (unused when PLATEAU == -1)
-MIN_X           = 1    # Left edge of plateau region (unused when PLATEAU == -1)
-MAX_Y           = 30    # Top edge of plateau region (unused when PLATEAU == -1)
+MAX_X           = 25    # Right edge of plateau region (unused when PLATEAU == -1)
+MIN_X           = 25    # Left edge of plateau region (unused when PLATEAU == -1)
+MAX_Y           = 25    # Top edge of plateau region (unused when PLATEAU == -1)
 MIN_Y           = 1    # Bottom edge of plateau region (unused when PLATEAU == -1)
 PLATEAU_INFLOW  = 0.0   # Inflow rate inside plateau region
 
@@ -77,3 +77,5 @@ ax.set_zlim(0, HEIGHT * 1.1)
 
 plt.tight_layout()
 plt.show()
+
+plt.savefig("food_gradient.pdf", format="pdf")

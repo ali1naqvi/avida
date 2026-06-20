@@ -274,6 +274,77 @@ public:
   }
 };
 
+class cActionInjectWellMixedUnique : public cAction
+{
+private:
+  cString m_filename;
+  int m_cell_num;
+  double m_merit;
+  int m_lineage_label;
+  double m_neutral_metric;
+public:
+  cActionInjectWellMixedUnique(cWorld* world, const cString& args, Feedback&)
+  : cAction(world, args), m_cell_num(0), m_merit(-1), m_lineage_label(0), m_neutral_metric(0)
+  {
+    cString largs(args);
+    if (largs.GetSize()) m_filename = largs.PopWord();
+    if (largs.GetSize()) m_cell_num = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_merit = largs.PopWord().AsDouble();
+    if (largs.GetSize()) m_lineage_label = largs.PopWord().AsInt();
+    if (largs.GetSize()) m_neutral_metric = largs.PopWord().AsDouble();
+  }
+
+  static const cString GetDescription() { return "Arguments: <string fname> [int cell_num=0] [double merit=-1] [int lineage_label=0] [double neutral_metric=0]"; }
+
+  void Process(cAvidaContext& ctx)
+  {
+    if (m_filename.GetSize() == 0) {
+      cerr << "error: no organism file specified" << endl;
+      return;
+    }
+
+    cPopulation& pop = m_world->GetPopulation();
+    if (m_cell_num < 0 || m_cell_num > pop.GetSize()) {
+      ctx.Driver().Feedback().Warning("InjectWellMixedUnique has invalid range!");
+      return;
+    }
+
+    GenomePtr genome;
+    cUserFeedback feedback;
+    genome = Util::LoadGenomeDetailFile(m_filename, m_world->GetWorkingDir(), m_world->GetHardwareManager(), feedback);
+    for (int i = 0; i < feedback.GetNumMessages(); i++) {
+      switch (feedback.GetMessageType(i)) {
+        case cUserFeedback::UF_ERROR:    cerr << "error: "; break;
+        case cUserFeedback::UF_WARNING:  cerr << "warning: "; break;
+        default: break;
+      };
+      cerr << feedback.GetMessage(i) << endl;
+    }
+    if (!genome) return;
+
+    std::vector<int> available_cells;
+    available_cells.reserve(pop.GetSize());
+    for (int cell_id = 0; cell_id < pop.GetSize(); cell_id++) {
+      if (!pop.GetCell(cell_id).IsOccupied()) available_cells.push_back(cell_id);
+    }
+
+    if (m_cell_num > static_cast<int>(available_cells.size())) {
+      ctx.Driver().Feedback().Warning("InjectWellMixedUnique requested more organisms than empty cells; filling all empty cells.");
+    }
+
+    const int inject_count = std::min(m_cell_num, static_cast<int>(available_cells.size()));
+    for (int i = 0; i < inject_count; i++) {
+      const int pick = ctx.GetRandom().GetUInt(available_cells.size());
+      const int target_cell = available_cells[pick];
+      available_cells[pick] = available_cells.back();
+      available_cells.pop_back();
+
+      pop.Inject(*genome, Systematics::Source(Systematics::DIVISION, "", true), ctx, target_cell, m_merit, m_lineage_label, m_neutral_metric);
+    }
+    pop.SetSyncEvents(true);
+  }
+};
+
 
 /*
  Injects randomly generated genomes into the entire population, plus a repro inst on the end,
@@ -6532,6 +6603,7 @@ void RegisterPopulationActions(cActionLibrary* action_lib)
   action_lib->Register<cActionInjectRange>("InjectRange");
   action_lib->Register<cActionInjectSequence>("InjectSequence");
   action_lib->Register<cActionInjectWellMixed>("InjectWellMixed");
+  action_lib->Register<cActionInjectWellMixedUnique>("InjectWellMixedUnique");
   action_lib->Register<cActionInjectOutsideGradient>("InjectOutsideGradient");
   action_lib->Register<cActionInjectAwayFromGradientPeak>("InjectAwayFromGradientPeak");
   action_lib->Register<cActionInjectSequenceWithDivMutRate>("InjectSequenceWDivMutRate");

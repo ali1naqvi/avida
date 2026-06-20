@@ -57,6 +57,9 @@
 #include "cParasite.h"
 #include "cPhenotype.h"
 #include "cPopulationCell.h"
+#include "cReaction.h"
+#include "cReactionLib.h"
+#include "cReactionProcess.h"
 #include "cResource.h"
 #include "cResourceCount.h"
 #include "cStats.h"
@@ -367,15 +370,29 @@ void cPopulation::ResetOrganismWorldPositionsAfterGradientReset(cAvidaContext& c
   }
 }
 
-void cPopulation::ConsiderLifetimeFitnessChampion(cOrganism* organism, double fitness)
+bool cPopulation::IsEnvCellOccupied(int env_cell_id, int excluded_pop_cell_id) const
 {
-  if (organism == NULL || fitness < 0.0) return;
-  if (m_lifetime_fitness_champion.valid && fitness <= m_lifetime_fitness_champion.fitness) return;
+  if (env_cell_id < 0) return false;
+
+  for (int i = 0; i < cell_array.GetSize(); i++) {
+    if (i == excluded_pop_cell_id) continue;
+    if (!cell_array[i].IsOccupied()) continue;
+    cOrganism* org = cell_array[i].GetOrganism();
+    if (org == NULL || org->IsDead()) continue;
+    if (MapPopCellToEnvCell(i) == env_cell_id) return true;
+  }
+  return false;
+}
+
+void cPopulation::ConsiderLifetimeFitnessChampion(cOrganism* organism, double energy)
+{
+  if (organism == NULL || energy < 0.0) return;
+  if (m_lifetime_fitness_champion.valid && energy <= m_lifetime_fitness_champion.stored_energy) return;
 
   LifetimeFitnessChampion& rec = m_lifetime_fitness_champion;
   rec.valid = true;
   rec.update = m_world->GetStats().GetUpdate();
-  rec.fitness = fitness;
+  rec.fitness = energy;
   rec.org_id = organism->GetID();
   rec.pop_cell_id = organism->GetCellID();
   rec.env_cell_id = (rec.pop_cell_id >= 0) ? MapPopCellToEnvCell(rec.pop_cell_id) : -1;
@@ -388,7 +405,7 @@ void cPopulation::ConsiderLifetimeFitnessChampion(cOrganism* organism, double fi
   rec.generation = phenotype.GetGeneration();
   rec.age = phenotype.GetAge();
   rec.num_divides = phenotype.GetNumDivides();
-  rec.stored_energy = phenotype.GetStoredEnergy();
+  rec.stored_energy = energy;
   rec.merit = phenotype.GetMerit().GetDouble();
   rec.gestation_time = phenotype.GetGestationTime();
 
@@ -593,6 +610,8 @@ cPopulation::cPopulation(cWorld* world)
 , sync_events(false)
 , m_hgt_resid(-1)
 , m_gen_lock_current_gen(0)
+, m_generation_selection_window_start_update(-1)
+, m_episodes_completed_this_gen(0)
 {
   world_x = world->GetConfig().WORLD_X.Get();
   world_y = world->GetConfig().WORLD_Y.Get();
@@ -979,9 +998,7 @@ bool cPopulation::ActivateOffspring(cAvidaContext& ctx, const Genome& offspring_
   ConstInstructionSequencePtr seq;
   seq.DynamicCastFrom(parent_organism->GetGenome().Representation());
   parent_phenotype.DivideReset(*seq);
-  if (m_world->GetConfig().FITNESS_METHOD.Get() == 3) {
-    ConsiderLifetimeFitnessChampion(parent_organism, parent_phenotype.GetFitness());
-  }
+  ConsiderLifetimeFitnessChampion(parent_organism, parent_phenotype.GetStoredEnergy());
   
   GeneticRepresentationPtr tmpHostGenome;
   
@@ -1565,7 +1582,7 @@ bool cPopulation::ActivateSemelOffspring(cAvidaContext& ctx, const Genome& offsp
     parent_phenotype.SetFitness(static_cast<double>(semel_birth_count));
     parent_phenotype.SetLifeFitness(static_cast<double>(semel_birth_count));
     parent_phenotype.SetNumDivides(semel_birth_count);
-    ConsiderLifetimeFitnessChampion(parent_organism, static_cast<double>(semel_birth_count));
+    ConsiderLifetimeFitnessChampion(parent_organism, parent_phenotype.GetStoredEnergy());
   }
 
   parent_organism->HandleGestation();
@@ -2600,6 +2617,11 @@ bool cPopulation::MoveOrganisms(cAvidaContext& ctx, int src_cell_id, int dest_ce
 {
   cPopulationCell& src_cell = GetCell(src_cell_id);
   cPopulationCell& dest_cell = GetCell(dest_cell_id);
+
+  if (GenerationSelectionActive()) {
+    if (GenerationSelectionCellStopped(src_cell_id)) return false;
+    if (GenerationSelectionCellStopped(dest_cell_id)) return false;
+  }
   
   // check for boundary effects on movement
   if (m_world->GetConfig().DEADLY_BOUNDARIES.Get() > 0 && m_world->GetConfig().WORLD_GEOMETRY.Get() == 1) {
@@ -2867,10 +2889,7 @@ void cPopulation::KillOrganism(cPopulationCell& in_cell, cAvidaContext& ctx)
   m_world->GetStats().RecordDeath();
   {
     const cPhenotype& phen = organism->GetPhenotype();
-    const double terminal_fit = (m_world->GetConfig().FITNESS_METHOD.Get() == 3)
-      ? phen.GetFitness()
-      : phen.GetLifeFitness();
-    m_world->GetStats().RecordDeathFitnessTerminal(terminal_fit);
+    m_world->GetStats().RecordDeathFitnessTerminal(phen.GetStoredEnergy());
   }
 
   // orgs killed during birth wont have avatars
@@ -6401,10 +6420,11 @@ void cPopulation::ProcessStep(cAvidaContext& ctx, double step_size, int cell_id)
   if (!cell.IsOccupied()) return;
   cOrganism* cur_org = cell.GetOrganism();
   
-  if (m_world->GetConfig().GENERATION_LOCK.Get() &&
+  if (GenerationLockEnabled() &&
       cur_org->GetPhenotype().GetGeneration() > m_gen_lock_current_gen) {
     return;
   }
+  if (GenerationSelectionCellStopped(cell_id)) return;
 
   cell.GetHardware()->SingleProcess(ctx);
   
@@ -6445,10 +6465,11 @@ void cPopulation::ProcessStepSpeculative(cAvidaContext& ctx, double step_size, i
   
   cOrganism* cur_org = cell.GetOrganism();
   cHardwareBase* hw = cell.GetHardware();
-  if (m_world->GetConfig().GENERATION_LOCK.Get() &&
+  if (GenerationLockEnabled() &&
       cur_org->GetPhenotype().GetGeneration() > m_gen_lock_current_gen) {
     return;
   }
+  if (GenerationSelectionCellStopped(cell_id)) return;
   
   if (cell.GetSpeculativeState()) {
     // We have already executed this instruction, just decrement the counter
@@ -6608,10 +6629,7 @@ void cPopulation::UpdateOrganismStats(cAvidaContext& ctx)
     
     const cPhenotype& phenotype = organism->GetPhenotype();
     const cMerit cur_merit = phenotype.GetMerit();
-    // FITNESS_METHOD 3: fitness is this organism's own cumulative successful divides
-    // (R_0 tally). Newborns start at 0; we do not substitute parent's fitness via
-    // last_fitness so means/maxes reflect each individual's lifetime progress only.
-    const double cur_fitness = phenotype.GetFitness();
+    const double cur_fitness = phenotype.GetStoredEnergy();
     const int cur_gestation_time = phenotype.GetGestationTime();
     const int cur_genome_length = phenotype.GetGenomeLength();
     
@@ -6952,7 +6970,42 @@ void cPopulation::ProcessPostUpdate(cAvidaContext& ctx)
   
   stats.SetNumCreatures(GetNumOrganisms());
 
-  if (m_world->GetConfig().GENERATION_LOCK.Get() && GetNumOrganisms() > 0) {
+  if (GenerationSelectionActive() && GetNumOrganisms() > 0) {
+    if (m_generation_selection_window_start_update < 0) {
+      m_generation_selection_window_start_update = stats.GetUpdate();
+    }
+    const int interval = std::max(1, m_world->GetConfig().EPISODE_LENGTH.Get());
+    if (GenerationSelectionAllStopped() ||
+        stats.GetUpdate() - m_generation_selection_window_start_update + 1 >= interval) {
+      // An episode just finished: bank each individual's terminal energy for this
+      // episode so selection can score on the mean across all episodes.
+      AccumulateEpisodeEnergies();
+      m_episodes_completed_this_gen++;
+
+      const int num_episodes = std::max(1, m_world->GetConfig().NUM_EPISODES.Get());
+      if (m_episodes_completed_this_gen < num_episodes) {
+        // More episodes remain in this generation: reset the same individuals to a
+        // fresh start (energy/CPU) and relocate them to new random world positions.
+        BeginNextEpisode(ctx);
+        if (m_world->GetVerbosity() >= VERBOSE_ON) {
+          cout << "Episode " << m_episodes_completed_this_gen << " of " << num_episodes
+               << " complete for generation " << m_gen_lock_current_gen << endl;
+        }
+      } else {
+        // All episodes for this generation are done: select on mean episode energy.
+        ApplyGenerationSelection(ctx);
+        m_gen_lock_current_gen++;
+        m_episodes_completed_this_gen = 0;
+        ResetEpisodeEnergies();
+        if (m_world->GetVerbosity() >= VERBOSE_ON) {
+          cout << "Generation selection advanced to generation " << m_gen_lock_current_gen << endl;
+        }
+      }
+      m_generation_selection_window_start_update = stats.GetUpdate() + 1;
+      ResetGenerationSelectionStops();
+    }
+  }
+  else if (GenerationLockEnabled() && GetNumOrganisms() > 0) {
     int min_gen = INT_MAX;
     for (int i = 0; i < cell_array.GetSize(); i++) {
       if (cell_array[i].IsOccupied()) {
@@ -6984,6 +7037,399 @@ void cPopulation::ProcessUpdateCellActions(cAvidaContext& ctx)
 {
   for (int i = 0; i < cell_array.GetSize(); i++) {
     if (cell_array[i].MutationRates().TestDeath(ctx)) KillOrganism(cell_array[i], ctx); 
+  }
+}
+
+bool cPopulation::GenerationSelectionEnabled() const
+{
+  return m_world->GetConfig().GENERATION_SELECTION.Get() > 0;
+}
+
+bool cPopulation::GenerationLockEnabled() const
+{
+  return m_world->GetConfig().GENERATION_LOCK.Get() || GenerationSelectionEnabled();
+}
+
+bool cPopulation::GenerationSelectionActive() const
+{
+  return GenerationSelectionEnabled();
+}
+
+bool cPopulation::GenerationSelectionCellStopped(int cell_id) const
+{
+  return GenerationSelectionActive() &&
+         cell_id >= 0 &&
+         cell_id < static_cast<int>(m_generation_selection_stopped.size()) &&
+         m_generation_selection_stopped[cell_id];
+}
+
+bool cPopulation::GenerationSelectionAllStopped() const
+{
+  if (!GenerationSelectionActive()) return false;
+  bool any_current_gen = false;
+  for (int i = 0; i < cell_array.GetSize(); i++) {
+    if (!cell_array[i].IsOccupied()) continue;
+    cOrganism* org = cell_array[i].GetOrganism();
+    if (org == NULL || org->IsDead()) continue;
+    if (org->GetPhenotype().GetGeneration() != m_gen_lock_current_gen) continue;
+    any_current_gen = true;
+    if (!GenerationSelectionCellStopped(i)) return false;
+  }
+  return any_current_gen;
+}
+
+void cPopulation::ResetGenerationSelectionStops()
+{
+  m_generation_selection_stopped.assign(cell_array.GetSize(), 0);
+  m_generation_selection_stop_energy.assign(cell_array.GetSize(), 0.0);
+}
+
+bool cPopulation::MarkGenerationSelectionStop(cAvidaContext& ctx, cOrganism* org)
+{
+  if (!GenerationSelectionActive() || org == NULL) return false;
+  const int cell_id = org->GetCellID();
+  if (cell_id < 0 || cell_id >= cell_array.GetSize()) return false;
+  if (m_generation_selection_stopped.size() != static_cast<size_t>(cell_array.GetSize())) {
+    ResetGenerationSelectionStops();
+  }
+
+  if (!m_generation_selection_stopped[cell_id] &&
+      m_world->GetConfig().ENERGY_ENABLED.Get() &&
+      environment.GetResourceLib().GetSize() > 0) {
+    cPhenotype& phenotype = org->GetPhenotype();
+    double terminal_reward = 0.0;
+    const cReactionLib& reaction_lib = environment.GetReactionLib();
+    for (int reaction_id = 0; reaction_id < reaction_lib.GetSize(); reaction_id++) {
+      const cReaction* reaction = reaction_lib.GetReaction(reaction_id);
+      if (reaction == NULL || !reaction->GetActive()) continue;
+
+      tLWConstListIterator<cReactionProcess> process_it(reaction->GetProcesses());
+      cReactionProcess* process = NULL;
+      while ((process = process_it.Next()) != NULL) {
+        if (process->GetType() != nReaction::PROCTYPE_ENERGY) continue;
+        cResource* resource = process->GetResource();
+        if (resource == NULL) continue;
+
+        const int res_id = resource->GetID();
+        double consumed = GetCellResVal(ctx, cell_id, res_id) * process->GetMaxFraction();
+        if (consumed > process->GetMaxNumber()) consumed = process->GetMaxNumber();
+        if (consumed < process->GetMinNumber()) consumed = 0.0;
+        if (consumed <= 0.0) continue;
+
+        consumed = std::min(consumed, GetCellResVal(ctx, cell_id, res_id));
+        terminal_reward += consumed * process->GetValue();
+      }
+    }
+
+    if (terminal_reward > 0.0) {
+      phenotype.SetEnergy(phenotype.GetStoredEnergy() + terminal_reward);
+      phenotype.SetMerit(cMerit(phenotype.ConvertEnergyToMerit(phenotype.GetStoredEnergy())));
+    }
+  }
+
+  m_generation_selection_stopped[cell_id] = 1;
+  m_generation_selection_stop_energy[cell_id] = org->GetPhenotype().GetStoredEnergy();
+  return true;
+}
+
+void cPopulation::AccumulateEpisodeEnergies()
+{
+  if (m_episode_energy_sum.size() != static_cast<size_t>(cell_array.GetSize())) {
+    m_episode_energy_sum.assign(cell_array.GetSize(), 0.0);
+  }
+  const bool have_stops = (m_generation_selection_stopped.size() == static_cast<size_t>(cell_array.GetSize()));
+  for (int i = 0; i < cell_array.GetSize(); i++) {
+    if (!cell_array[i].IsOccupied()) continue;
+    cOrganism* org = cell_array[i].GetOrganism();
+    if (org == NULL || org->IsDead()) continue;
+    // Terminal energy for this episode: the energy banked when the organism
+    // executed stop, otherwise its current stored energy at the timeout.
+    double terminal_energy = org->GetPhenotype().GetStoredEnergy();
+    if (have_stops && m_generation_selection_stopped[i]) {
+      terminal_energy = m_generation_selection_stop_energy[i];
+    }
+    m_episode_energy_sum[i] += terminal_energy;
+  }
+}
+
+void cPopulation::ResetEpisodeEnergies()
+{
+  m_episode_energy_sum.assign(cell_array.GetSize(), 0.0);
+}
+
+void cPopulation::RelocateAllOrganismsToEpisodeStart(cAvidaContext& ctx)
+{
+  if (!DecoupledWorldPositionsEnabled()) return;
+
+  const int policy = m_world->GetConfig().OFFSPRING_WORLD_POS.Get();
+  // Policy 0 inherits the current world position, so there is nothing to randomize.
+  if (policy != 1 && policy != 2) return;
+
+  int margin = m_world->GetConfig().OFFSPRING_WORLD_POS_MARGIN.Get();
+  if (margin < 0) margin = 0;
+
+  std::vector<int> eligible_env_cells;
+  if (policy == 2) {
+    BuildEnvCellsAwayFromGradientPeak(margin, cString(""), eligible_env_cells);
+  } else {
+    BuildEnvCellsOutsideGradient(margin, cString(""), eligible_env_cells);
+  }
+  if (eligible_env_cells.empty()) {
+    ctx.Driver().Feedback().Warning("NUM_EPISODES relocation found no eligible world cells; organisms kept their positions for the next episode.");
+    return;
+  }
+
+  int used = 0;
+  for (int i = 0; i < cell_array.GetSize(); i++) {
+    if (!cell_array[i].IsOccupied()) continue;
+    cOrganism* org = cell_array[i].GetOrganism();
+    if (org == NULL || org->IsDead()) continue;
+    const int new_env = PickRandomCellFromPool(ctx, eligible_env_cells, used);
+    if (new_env < 0) continue;
+    cell_array[i].SetOrgEnvCellID(new_env);
+  }
+}
+
+void cPopulation::BeginNextEpisode(cAvidaContext& ctx)
+{
+  // Reset each surviving individual to a fresh start for the next episode:
+  // NewTrial() restores energy to its birth value and clears bonuses / CPU-cycle
+  // counters; the hardware reset clears registers, stacks, and the instruction
+  // pointer so the organism re-runs from scratch.
+  for (int i = 0; i < cell_array.GetSize(); i++) {
+    if (!cell_array[i].IsOccupied()) continue;
+    cOrganism* org = cell_array[i].GetOrganism();
+    if (org == NULL || org->IsDead()) continue;
+    org->NewTrial();
+    org->GetHardware().Reset(ctx);
+  }
+  RelocateAllOrganismsToEpisodeStart(ctx);
+}
+
+void cPopulation::ApplyGenerationSelection(cAvidaContext& ctx)
+{
+  struct sGenerationSelectionCandidate {
+    int cell_id;
+    double avg_energy;
+    cOrganism* org;
+  };
+
+  // Selection scores on the mean terminal energy across all episodes in this
+  // generation. AccumulateEpisodeEnergies() has already banked the final episode
+  // by the time this runs, so the per-cell sum covers every episode.
+  const int num_episodes = std::max(1, m_world->GetConfig().NUM_EPISODES.Get());
+  const bool have_episode_sums = (m_episode_energy_sum.size() == static_cast<size_t>(cell_array.GetSize()));
+
+  std::vector<sGenerationSelectionCandidate> candidates;
+  candidates.reserve(cell_array.GetSize());
+  for (int i = 0; i < cell_array.GetSize(); i++) {
+    if (!cell_array[i].IsOccupied()) continue;
+    cOrganism* org = cell_array[i].GetOrganism();
+    if (org == NULL || org->IsDead()) continue;
+    double avg_energy;
+    if (have_episode_sums) {
+      avg_energy = m_episode_energy_sum[i] / static_cast<double>(num_episodes);
+    } else {
+      // Fallback (episode sums unavailable): use this organism's terminal energy.
+      avg_energy = org->GetPhenotype().GetStoredEnergy();
+      if (m_generation_selection_stopped.size() == static_cast<size_t>(cell_array.GetSize()) &&
+          m_generation_selection_stopped[i]) {
+        avg_energy = m_generation_selection_stop_energy[i];
+      }
+    }
+    candidates.push_back({i, avg_energy, org});
+  }
+  const int num_candidates = static_cast<int>(candidates.size());
+  if (num_candidates == 0) return;
+
+  std::vector<int> target_cells;
+  target_cells.reserve(num_candidates);
+  for (int i = 0; i < num_candidates; i++) target_cells.push_back(candidates[i].cell_id);
+
+  std::vector<int> selected_sources;
+  selected_sources.reserve(num_candidates);
+
+  const bool shadow_run = m_world->GetConfig().GENERATION_SELECTION_SHADOW_RUN.Get();
+  const int configured_elites = shadow_run
+    ? 0
+    : std::max(0, m_world->GetConfig().GENERATION_SELECTION_ELITES.Get());
+  const int elite_count = std::min(configured_elites, num_candidates);
+  if (elite_count > 0) {
+    std::vector<int> ranked(num_candidates);
+    std::iota(ranked.begin(), ranked.end(), 0);
+    std::sort(ranked.begin(), ranked.end(), [&candidates](int a, int b) {
+      if (candidates[a].avg_energy != candidates[b].avg_energy) return candidates[a].avg_energy > candidates[b].avg_energy;
+      return candidates[a].org->GetID() < candidates[b].org->GetID();
+    });
+    for (int i = 0; i < elite_count; i++) {
+      selected_sources.push_back(ranked[i]);
+    }
+  }
+
+  const int tournament_k = std::min(
+    std::max(1, m_world->GetConfig().GENERATION_SELECTION_TOURNAMENT_K.Get()),
+    num_candidates
+  );
+  while (selected_sources.size() < target_cells.size()) {
+    std::vector<int> pool(num_candidates);
+    std::iota(pool.begin(), pool.end(), 0);
+    int winner = -1;
+    for (int draw = 0; draw < tournament_k; draw++) {
+      const int pool_pos = ctx.GetRandom().GetUInt(pool.size());
+      const int candidate_idx = pool[pool_pos];
+      pool.erase(pool.begin() + pool_pos);
+      // The first member of a uniformly sampled tournament is itself uniform
+      // over that tournament. Using it for the shadow run avoids an extra RNG
+      // draw, while still preserving reproducibility from RANDOM_SEED.
+      if (shadow_run && winner < 0) {
+        winner = candidate_idx;
+      } else if (!shadow_run && (winner < 0 || candidates[candidate_idx].avg_energy > candidates[winner].avg_energy ||
+          (candidates[candidate_idx].avg_energy == candidates[winner].avg_energy &&
+           candidates[candidate_idx].org->GetID() < candidates[winner].org->GetID()))) {
+        winner = candidate_idx;
+      }
+    }
+    selected_sources.push_back(winner);
+  }
+
+  // Capture selection winners before ActivateOrganism replaces the parent
+  // population with freshly injected children.
+  std::vector<char> recorded_selected(num_candidates, 0);
+  for (int i = 0; i < static_cast<int>(selected_sources.size()); i++) {
+    const int src = selected_sources[i];
+    if (src < 0 || src >= num_candidates || recorded_selected[src]) continue;
+    ConsiderLifetimeFitnessChampion(candidates[src].org, candidates[src].avg_energy);
+    recorded_selected[src] = 1;
+  }
+
+  std::vector<cOrganism*> next_generation(target_cells.size(), NULL);
+  for (int i = 0; i < static_cast<int>(target_cells.size()); i++) {
+    cOrganism& source_org = *candidates[selected_sources[i]].org;
+    ConstInstructionSequencePtr source_seq;
+    source_seq.DynamicCastFrom(source_org.GetGenome().Representation());
+    InstructionSequence child_seq(*source_seq);
+    const cInstSet& instset = m_world->GetHardwareManager().GetInstSet(
+      source_org.GetGenome().Properties().Get("instset").StringValue()
+    );
+
+    for (int site = 0; site < child_seq.GetSize(); site++) {
+      if (ctx.GetRandom().P(source_org.GetCopyMutProb())) {
+        child_seq[site] = instset.GetRandomInst(ctx);
+      }
+    }
+
+    const int configured_min_size = m_world->GetConfig().MIN_GENOME_SIZE.Get();
+    const int min_genome_size = std::max(1, configured_min_size);
+    const int configured_max_size = m_world->GetConfig().MAX_GENOME_SIZE.Get();
+    const int max_genome_size = configured_max_size > 0 ? configured_max_size : INT_MAX;
+
+    int num_insertions = ctx.GetRandom().GetRandBinomial(child_seq.GetSize() + 1, source_org.GetCopyInsProb());
+    while (num_insertions-- > 0 && child_seq.GetSize() < max_genome_size) {
+      const int site = ctx.GetRandom().GetUInt(child_seq.GetSize() + 1);
+      child_seq.Insert(site, instset.GetRandomInst(ctx));
+    }
+
+    int num_deletions = ctx.GetRandom().GetRandBinomial(child_seq.GetSize(), source_org.GetCopyDelProb());
+    while (num_deletions-- > 0 && child_seq.GetSize() > min_genome_size) {
+      const int site = ctx.GetRandom().GetUInt(child_seq.GetSize());
+      child_seq.Remove(site);
+    }
+
+    Genome child_genome(
+      source_org.GetGenome().HardwareType(),
+      source_org.GetGenome().Properties(),
+      GeneticRepresentationPtr(new InstructionSequence(child_seq))
+    );
+
+    cOrganism* new_org = new cOrganism(
+      m_world,
+      ctx,
+      child_genome,
+      m_gen_lock_current_gen,
+      Systematics::Source(Systematics::DUPLICATION, "generation-selection")
+    );
+
+    Systematics::UnitPtr unit(new_org);
+    new_org->AddReference();
+    Systematics::Manager::Of(m_world->GetNewWorld())->ClassifyNewUnit(unit);
+
+    ConstInstructionSequencePtr seq;
+    seq.DynamicCastFrom(new_org->GetGenome().Representation());
+    new_org->GetPhenotype().SetupInject(*seq);
+    new_org->GetPhenotype().SetGeneration(m_gen_lock_current_gen + 1);
+    if (m_world->GetConfig().ENERGY_ENABLED.Get()) {
+      new_org->GetPhenotype().SetMerit(cMerit(new_org->GetPhenotype().ConvertEnergyToMerit(new_org->GetPhenotype().GetStoredEnergy())));
+    }
+
+    const int mut_source = m_world->GetConfig().MUT_RATE_SOURCE.Get();
+    if (mut_source == 1) new_org->MutationRates().Copy(cell_array[target_cells[i]].MutationRates());
+    else new_org->MutationRates().Copy(source_org.MutationRates());
+
+    if (m_world->GetConfig().USE_FORM_GROUPS.Get()) new_org->SetParentGroup(source_org.GetParentGroup());
+    if (source_org.HadParentTeacher()) new_org->SetParentTeacher(true);
+    new_org->SetParentFT(source_org.GetParentFT());
+    if (source_org.HasOpinion()) {
+      const std::pair<int, int>& opinion = source_org.GetOpinion();
+      new_org->SetOpinion(opinion.first);
+    }
+    new_org->SetLineageLabel(source_org.GetLineageLabel());
+
+    next_generation[i] = new_org;
+  }
+
+  // Decoupled world position: the freshly selected generation must follow the
+  // same OFFSPRING_WORLD_POS placement rule as normal reproduction. Without
+  // this, ActivateOrganism leaves the new organisms with no env override and
+  // MapPopCellToEnvCell silently falls back to the (coupled) population cell --
+  // so organisms whose pop slot happens to sit near the peak bank energy
+  // without ever foraging and pollute the champion selection. Build the
+  // eligible env-cell pool once and hand each child an away-from-peak (policy 2)
+  // / outside-gradient (policy 1) world position, or inherit the source
+  // organism's position (policy 0).
+  const bool decoupled_world_pos = DecoupledWorldPositionsEnabled();
+  const int offspring_world_policy = m_world->GetConfig().OFFSPRING_WORLD_POS.Get();
+  int offspring_world_margin = m_world->GetConfig().OFFSPRING_WORLD_POS_MARGIN.Get();
+  if (offspring_world_margin < 0) offspring_world_margin = 0;
+
+  std::vector<int> gs_parent_env_override;
+  if (decoupled_world_pos) {
+    gs_parent_env_override.assign(next_generation.size(), -1);
+    for (int i = 0; i < static_cast<int>(next_generation.size()); i++) {
+      gs_parent_env_override[i] = cell_array[candidates[selected_sources[i]].cell_id].GetOrgEnvCellID();
+    }
+  }
+
+  std::vector<int> gs_eligible_env_cells;
+  int gs_eligible_env_cells_used = 0;
+  if (decoupled_world_pos && offspring_world_policy == 1) {
+    BuildEnvCellsOutsideGradient(offspring_world_margin, cString(""), gs_eligible_env_cells);
+  } else if (decoupled_world_pos && offspring_world_policy == 2) {
+    BuildEnvCellsAwayFromGradientPeak(offspring_world_margin, cString(""), gs_eligible_env_cells);
+  }
+  const int gs_child_generation = m_gen_lock_current_gen + 1;
+
+  for (int i = 0; i < static_cast<int>(next_generation.size()); i++) {
+    const int target_cell = target_cells[i];
+    int env_override = -1;
+    if (decoupled_world_pos) {
+      if (offspring_world_policy == 1 || offspring_world_policy == 2) {
+        env_override = PickGradientWorldCell(ctx, offspring_world_policy, offspring_world_margin,
+                                             cString(""), gs_child_generation,
+                                             gs_eligible_env_cells, gs_eligible_env_cells_used);
+        if (env_override < 0) env_override = gs_parent_env_override[i]; // pool exhausted -> keep parent's world position
+      } else {
+        // OFFSPRING_WORLD_POS == 0: inherit the source organism's world position.
+        env_override = gs_parent_env_override[i];
+      }
+    }
+    ActivateOrganism(ctx, next_generation[i], cell_array[target_cell], true, true, env_override);
+  }
+
+  if (m_world->GetVerbosity() >= VERBOSE_ON) {
+    cout << "Generation selection applied: mode=" << (shadow_run ? "shadow-random" : "energy-tournament")
+         << " tournament_k=" << tournament_k
+         << " elites=" << elite_count
+         << " population=" << num_candidates << endl;
   }
 }
 
@@ -8131,6 +8577,14 @@ void cPopulation::BuildTimeSlicer()
     {
       Apto::SmartPtr<Apto::Random> rng(new Apto::RNG::AvidaRNG(m_world->GetRandom().GetInt(m_world->GetRandom().MaxSeed())));
       m_scheduler = new Apto::Scheduler::ProbabilisticIntegrated(cell_array.GetSize(), rng);
+    }
+      break;
+    case SLICE_SHUFFLED_CONSTANT:
+    {
+      // Equal CPU cycles per organism (like SLICE_CONSTANT), but the execution order within
+      // each sweep is reshuffled every pass to remove deterministic cell-id ordering bias.
+      Apto::SmartPtr<Apto::Random> rng(new Apto::RNG::AvidaRNG(m_world->GetRandom().GetInt(0x7FFFFFFF)));
+      m_scheduler = new Apto::Scheduler::ShuffledRoundRobin(cell_array.GetSize(), rng);
     }
       break;
     default:

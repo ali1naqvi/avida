@@ -120,6 +120,11 @@ private:
   Apto::Array<GeneticRepresentationPtr> parasite_genotype_list;
   Apto::Array<GeneticRepresentationPtr> host_genotype_list;
   int m_gen_lock_current_gen;
+  int m_generation_selection_window_start_update;
+  std::vector<char> m_generation_selection_stopped;
+  std::vector<double> m_generation_selection_stop_energy;
+  int m_episodes_completed_this_gen;
+  std::vector<double> m_episode_energy_sum;
   LifetimeFitnessChampion m_lifetime_fitness_champion;
   
   // Data Tracking...
@@ -185,7 +190,7 @@ public:
 
   // cPopulation
   
-  void ConsiderLifetimeFitnessChampion(cOrganism* organism, double fitness);
+  void ConsiderLifetimeFitnessChampion(cOrganism* organism, double energy);
   const LifetimeFitnessChampion& GetLifetimeFitnessChampion() const { return m_lifetime_fitness_champion; }
 
   void AttachOrgStatProvider(cPopulationOrgStatProviderPtr provider) { m_org_stat_providers.Push(provider); }
@@ -371,6 +376,7 @@ public:
     }
     return MapPopCellToEnvCellByGrid(pop_cell_id);
   }
+  bool IsEnvCellOccupied(int env_cell_id, int excluded_pop_cell_id = -1) const;
 
   // Build the set of env-grid cells that sit OUTSIDE every GRADIENT_RESOURCE's
   // food disc by at least `margin` env-grid cells of empty space. A gradient's
@@ -477,6 +483,7 @@ public:
 
   void AddBeginSleep(int cellID, int start_time);
   void AddEndSleep(int cellID, int end_time);
+  bool MarkGenerationSelectionStop(cAvidaContext& ctx, cOrganism* org);
  
   const Apto::Array<pair<int,int>, Apto::Smart>& getCellSleepLog(int i) const { return sleep_log[i]; }
 
@@ -578,6 +585,18 @@ private:
   void UpdateOrganismStats(cAvidaContext& ctx); 
   void UpdateFTOrgStats(cAvidaContext& ctx); 
   void UpdateMaleFemaleOrgStats(cAvidaContext& ctx);
+
+  bool GenerationSelectionEnabled() const;
+  bool GenerationLockEnabled() const;
+  bool GenerationSelectionActive() const;
+  bool GenerationSelectionCellStopped(int cell_id) const;
+  bool GenerationSelectionAllStopped() const;
+  void ResetGenerationSelectionStops();
+  void ApplyGenerationSelection(cAvidaContext& ctx);
+  void AccumulateEpisodeEnergies();
+  void ResetEpisodeEnergies();
+  void BeginNextEpisode(cAvidaContext& ctx);
+  void RelocateAllOrganismsToEpisodeStart(cAvidaContext& ctx);
   
   void InjectClone(int cell_id, cOrganism& orig_org, Systematics::Source src);
   void CompeteOrganisms_ConstructOffspring(int cell_id, cOrganism& parent);

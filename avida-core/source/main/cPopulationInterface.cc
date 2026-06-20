@@ -263,6 +263,23 @@ bool cPopulationInterface::IsNeighborCellOccupied() {
   return cell.ConnectionList().GetFirst()->IsOccupied();
 }
 
+static inline int FacedEnvCellOrMinus1(int facing, int my_env, int env_w, int env_h);
+
+bool cPopulationInterface::IsFacedWorldCellOccupied()
+{
+  cPopulation& pop = m_world->GetPopulation();
+  if (m_cell_id < 0 || m_cell_id >= pop.GetSize()) return false;
+
+  const int my_env = pop.GetCell(m_cell_id).GetOrgEnvCellID();
+  if (pop.DecoupledWorldPositionsEnabled() && my_env >= 0) {
+    const int faced_env = FacedEnvCellOrMinus1(GetFacedDir(), my_env,
+                                               pop.GetEnvWorldX(), pop.GetEnvWorldY());
+    return faced_env >= 0 && pop.IsEnvCellOccupied(faced_env, m_cell_id);
+  }
+
+  return IsNeighborCellOccupied();
+}
+
 int cPopulationInterface::GetNumNeighbors()
 {
   cPopulationCell & cell = m_world->GetPopulation().GetCell(m_cell_id);

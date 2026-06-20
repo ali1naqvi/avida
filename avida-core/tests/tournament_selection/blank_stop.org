@@ -29,7 +29,6 @@ nop-C
 nop-C
 nop-C
 nop-C
-repro
 nop-C
 nop-C
 nop-C
@@ -50,4 +49,5 @@ nop-C
 nop-C
 nop-C
 nop-C
-repro
+nop-C
+stop

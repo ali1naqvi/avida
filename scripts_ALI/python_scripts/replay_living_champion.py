@@ -4,14 +4,37 @@ from __future__ import annotations
 
 # Edit these values instead of passing the run folder as a command-line arg.
 # WORK_RUN_DIR can be absolute, or relative to the repo root.
-WORK_RUN_DIR = "work/ecology_test_relative_cost_medium_run_1"
+WORK_RUN_DIR = "avida-core/build/macos-arm64/work_experiments_with_nonoverlapping/ecology_test_over_fast"
 
+# "highest_energy" = replay the highest stored-energy individual.
+#                    HIGHEST_ENERGY_OPTION below chooses whether that means
+#                    all-time ("ever") or final generation ("last_generation").
 # "persistence" = replay a representative genotype from the lineage label that
 #                 appears across the most saved population snapshots.
 #                 "persistance" is accepted as a spelling alias.
-# "energy"      = replay the genotype with the highest Stored Energy in
-#                 lifetime_champion.dat; falls back to highest .spop merit.
-REPLAY_SELECTION = "persistence"
+REPLAY_SELECTION = "highest_energy"
+
+# Highest-energy selector:
+# "ever"            = replay data/lifetime_champion.org, the all-time highest live
+#                     stored-energy individual (stats come from lifetime_champion.dat).
+# "last_generation" or "last generation" = replay data/final_living_champion.org,
+#                                           the highest live stored-energy individual
+#                                           written immediately before Exit.
+HIGHEST_ENERGY_OPTION = "ever"
+
+# Additional replay settings can live in RUN_DIR/replay_config.cfg.
+# The first setting is `num_of_trials`, defaulting to one replay when absent.
+REPLAY_CONFIG = "replay_config.cfg"
+
+# Avida can continue running after the focal organism stops producing replay
+# frames in some current living-champion configs. The timeout is a wall-clock
+# safety net for that case; keep it large enough that a full solo replay (which
+# may be hundreds of updates long) finishes before it triggers.
+AVIDA_REPLAY_TIMEOUT = 120.0
+# Fallback replay length (in updates) when avida.cfg has no death-based lifespan
+# (e.g. DEATH_METHOD 0). The genome needs enough update steps to actually
+# execute and navigate to food, so this must not be tiny.
+DEFAULT_REPLAY_UPDATES = 100
 
 import argparse
 import glob
@@ -19,6 +42,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -27,6 +51,8 @@ import tempfile
 _mpl_cache = os.path.join(tempfile.gettempdir(), "avida_matplotlib_cache")
 os.makedirs(_mpl_cache, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", _mpl_cache)
+if "--save" in sys.argv or "--summary-only" in sys.argv:
+    os.environ.setdefault("MPLBACKEND", "Agg")
 
 import visualize_highest_fitness as vhf
 
@@ -88,6 +114,71 @@ def read_champion_dat_rows(dat_path: str) -> list[dict]:
     return out
 
 
+def _champion_meta(dat_path: str, source: str) -> dict:
+    dat_row = read_champion_dat_last_row(dat_path)
+    meta = {"source": source}
+    if dat_row:
+        # PrintChampionGenotype writes "Champion Energy"; PrintLifetimeFitnessChampion
+        # writes "Lifetime Energy"/"Stored Energy". Accept whichever is present.
+        energy = next(
+            (dat_row[key] for key in ("Champion Energy", "Lifetime Energy", "Stored Energy")
+             if key in dat_row),
+            None,
+        )
+        meta.update({
+            "champion_update": dat_row.get("Update"),
+            "champion_energy": energy,
+            "genotype_name": dat_row.get("Genotype Name"),
+            "genotype_id": dat_row.get("Genotype ID"),
+            "num_divides": dat_row.get("Num Divides"),
+        })
+    return meta
+
+
+def pick_ever_live_energy(data_dir: str) -> tuple[str | None, dict]:
+    """Pick the all-time highest live stored-energy champion."""
+    org_path = os.path.join(data_dir, "lifetime_champion.org")
+    if not os.path.exists(org_path):
+        return None, {}
+    return org_path, _champion_meta(
+        os.path.join(data_dir, "lifetime_champion.dat"),
+        "lifetime_champion.org (all-time highest live stored energy; HIGHEST_ENERGY_OPTION='ever')",
+    )
+
+
+def pick_last_generation_live_energy(data_dir: str) -> tuple[str | None, dict]:
+    """Pick the highest live stored-energy champion written immediately before Exit."""
+    org_path = os.path.join(data_dir, "final_living_champion.org")
+    if not os.path.exists(org_path):
+        meta = {
+            "source": "final_living_champion.org (missing)",
+            "selection_note": (
+                "final_living_champion.org not found; rerun Avida with "
+                "'PrintChampionGenotype final_living_champion.org "
+                "final_living_champion.dat current' scheduled immediately before Exit "
+                "for exact last_generation selection"
+            ),
+        }
+        return None, meta
+    return org_path, _champion_meta(
+        os.path.join(data_dir, "final_living_champion.dat"),
+        "final_living_champion.org (highest live stored energy in last generation; HIGHEST_ENERGY_OPTION='last_generation')",
+    )
+
+
+def pick_highest_energy(data_dir: str, option: str) -> tuple[str | None, dict]:
+    """Pick a highest-energy organism according to HIGHEST_ENERGY_OPTION."""
+    normalized = option.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized == "ever":
+        return pick_ever_live_energy(data_dir)
+    if normalized in ("last_generation", "last_gen", "final_generation", "final"):
+        return pick_last_generation_live_energy(data_dir)
+    return None, {
+        "source": "invalid HIGHEST_ENERGY_OPTION",
+        "selection_note": "Set HIGHEST_ENERGY_OPTION to 'ever' or 'last_generation'.",
+    }
+
+
 def pick_highest_stored_energy(data_dir: str) -> tuple[str | None, dict]:
     """Pick the highest Stored Energy record from lifetime_champion.dat."""
     lifetime_dat = os.path.join(data_dir, "lifetime_champion.dat")
@@ -120,7 +211,7 @@ def pick_highest_stored_energy(data_dir: str) -> tuple[str | None, dict]:
     if best is rows[-1]:
         candidates.append(os.path.join(data_dir, "lifetime_champion.org"))
     candidates.extend([
-        os.path.join(data_dir, "champion.org"),
+        os.path.join(data_dir, "lifetime_champion.org"),
         os.path.join(data_dir, "lifetime_champion.org"),
     ])
     org_path = next((path for path in candidates if path and os.path.exists(path)), None)
@@ -495,11 +586,122 @@ def find_avida_binary(user_path: str | None) -> str | None:
     return None
 
 
+def parse_config_int(path: str, key: str, default: int) -> int:
+    if not os.path.exists(path):
+        return default
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == key:
+                try:
+                    return int(float(parts[1]))
+                except ValueError:
+                    return default
+    return default
+
+
+def parse_replay_energies(replay_dir: str) -> list[tuple[int, list[tuple[int, float]]]]:
+    """Return per-update stored energy from org_loc dumps.
+
+    Newer Avida builds append stored_energy as the final org_loc column.
+    Older dumps are ignored so replay animation remains backwards compatible.
+    """
+    pattern = os.path.join(replay_dir, "data", "grid_dumps", "org_loc.*.dat")
+    results: list[tuple[int, list[tuple[int, float]]]] = []
+    for fpath in glob.glob(pattern):
+        basename = os.path.basename(fpath)
+        parts = basename.split(".")
+        try:
+            update = int(parts[-2])
+        except (ValueError, IndexError):
+            continue
+
+        rows: list[tuple[int, float]] = []
+        with open(fpath, encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                cols = line.split(",")
+                if len(cols) < 7:
+                    continue
+                try:
+                    rows.append((int(cols[0]), float(cols[-1])))
+                except ValueError:
+                    continue
+        results.append((update, rows))
+    results.sort(key=lambda item: item[0])
+    return results
+
+
+def final_focal_energy(
+    energy_by_update: list[tuple[int, list[tuple[int, float]]]],
+    trajectory: list[tuple[int, list[tuple[int, int, int]]]],
+) -> float | None:
+    focal_id: int | None = None
+    for _, orgs in trajectory:
+        if orgs:
+            focal_id = orgs[0][0]
+            break
+    if focal_id is None:
+        return None
+
+    final_energy: float | None = None
+    for _, rows in energy_by_update:
+        for org_id, energy in rows:
+            if org_id == focal_id:
+                final_energy = energy
+    return final_energy
+
+
+def run_replay_trial(
+    champion_org: str,
+    replay_dir: str,
+    avida_bin: str,
+    world_x: int,
+    world_y: int,
+    env_world_x: int,
+    env_world_y: int,
+    num_updates: int,
+    allow_reproduction: bool,
+    timeout_sec: float,
+) -> tuple[list[tuple[int, list[tuple[int, int, int]]]], object, int, float | None]:
+    if os.path.exists(replay_dir):
+        shutil.rmtree(replay_dir)
+    vhf.setup_replay(
+        champion_org,
+        replay_dir,
+        world_x,
+        world_y,
+        num_updates,
+        allow_reproduction=allow_reproduction,
+    )
+    try:
+        vhf.run_avida(replay_dir, avida_bin, timeout_sec=max(1.0, timeout_sec))
+    except subprocess.TimeoutExpired as err:
+        print(
+            f"WARNING: avida replay timed out after {err.timeout:g}s; "
+            "using trajectory files produced before the timeout.",
+            file=sys.stderr,
+        )
+
+    trajectory = vhf.parse_org_loc_files(replay_dir)
+    if not trajectory:
+        raise RuntimeError("replay produced no trajectory")
+    res_grid = vhf.load_resource_grid(replay_dir, env_world_x, env_world_y)
+    energy = final_focal_energy(parse_replay_energies(replay_dir), trajectory)
+    max_live_orgs = max((len(orgs) for _, orgs in trajectory), default=0)
+    return trajectory, res_grid, max_live_orgs, energy
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Replay a genotype from the configured WORK_RUN_DIR. By default, "
-            "choose either the most persistent lineage or highest-energy record "
+            "choose either the configured highest-energy champion, most persistent lineage, or legacy energy record "
             "using REPLAY_SELECTION at the top of this file."
         )
     )
@@ -510,9 +712,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--selection-mode",
-        choices=("persistence", "persistance", "energy", "live_fitness"),
+        choices=("highest_energy", "live_energy", "persistence", "persistance", "energy", "live_fitness"),
         default=REPLAY_SELECTION,
-        help="Replay target selector. Defaults to REPLAY_SELECTION at the top of this file.",
+        help=(
+            "Replay target selector. Defaults to REPLAY_SELECTION at the top of this file. "
+            "Use HIGHEST_ENERGY_OPTION in the file to choose 'ever' vs 'last_generation'."
+        ),
     )
     parser.add_argument("--data-dir", default="data")
     parser.add_argument(
@@ -555,11 +760,25 @@ def main() -> int:
     parser.add_argument("--save", default=None, help="Save animation as .gif or .mp4.")
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--avida", default=None, help="Path to avida binary.")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=AVIDA_REPLAY_TIMEOUT,
+        help="Seconds to wait for Avida before using partial replay output.",
+    )
     parser.add_argument("--summary-only", action="store_true",
                         help="Run the replay and print a path summary; do not open an animation window.")
+    parser.add_argument(
+        "--num-of-trials",
+        type=int,
+        default=None,
+        help="Number of replay trials to average for recorded energy (default: RUN_DIR/replay_config.cfg num_of_trials, else 1).",
+    )
     args = parser.parse_args()
     if args.selection_mode == "persistance":
         args.selection_mode = "persistence"
+    if args.selection_mode in ("live_energy", "energy"):
+        args.selection_mode = "highest_energy"
 
     run_dir = args.run_dir
     if not os.path.isabs(run_dir):
@@ -576,6 +795,11 @@ def main() -> int:
     if not os.path.isdir(args.data_dir):
         print(f"ERROR: data directory not found: {args.data_dir}", file=sys.stderr)
         return 1
+    replay_config_path = os.path.join(run_dir, REPLAY_CONFIG)
+    num_of_trials = args.num_of_trials
+    if num_of_trials is None:
+        num_of_trials = parse_config_int(replay_config_path, "num_of_trials", 1)
+    num_of_trials = max(1, num_of_trials)
 
     snapshot_meta: dict = {}
     source = ""
@@ -589,26 +813,21 @@ def main() -> int:
             print(f"ERROR: {champion_org} not found.", file=sys.stderr)
             return 1
         source = "explicit --org"
-    elif args.selection_mode == "energy":
-        champion_org, snapshot_meta = pick_highest_stored_energy(args.data_dir)
+    elif args.selection_mode == "highest_energy":
+        champion_org, snapshot_meta = pick_highest_energy(args.data_dir, HIGHEST_ENERGY_OPTION)
         if champion_org is None:
-            row, snapshot_meta = pick_highest_merit_spop(args.data_dir, args.spop_prefix)
-            if row is None:
-                print("ERROR: no Stored Energy records or living .spop rows found.", file=sys.stderr)
-                return 1
-            generated_org_path = os.path.join(tempfile.gettempdir(), f"avida_energy_{row['id']}.org")
-            write_org_from_sequence(
-                row["sequence"],
-                os.path.join(run_dir, "instset.cfg"),
-                generated_org_path,
-                [
-                    "Generated by replay_living_champion.py",
-                    f"Selection: {snapshot_meta.get('source')}",
-                    f"Genotype ID: {row['id']}",
-                ],
+            if snapshot_meta:
+                for k, v in snapshot_meta.items():
+                    if v not in (None, ""):
+                        print(f"{k}: {v}", file=sys.stderr)
+            print(
+                "ERROR: highest-energy replay target not found. "
+                "Set HIGHEST_ENERGY_OPTION to 'ever' for champion.org, or rerun Avida "
+                "with final_living_champion output for 'last_generation'.",
+                file=sys.stderr,
             )
-            champion_org = generated_org_path
-        source = snapshot_meta.get("source", "energy selection")
+            return 1
+        source = snapshot_meta.get("source", "highest energy selection")
     elif args.selection_mode == "persistence":
         row, snapshot_meta = pick_persistent_lineage_spop(args.data_dir, args.spop_prefix)
         if row is None:
@@ -650,7 +869,7 @@ def main() -> int:
                     args.data_dir, args.spop_prefix, avg_path,
                 )
 
-        champion_fallback = os.path.join(args.data_dir, "champion.org")
+        champion_fallback = os.path.join(args.data_dir, "lifetime_champion.org")
         champion_dat = os.path.join(args.data_dir, "champion.dat")
         archive_dir = os.path.join(args.data_dir, "archive")
 
@@ -723,6 +942,8 @@ def main() -> int:
     print(f"Replaying {champion_org}")
     print(f"  run directory        : {run_dir}")
     print(f"  selection mode       : {args.selection_mode}")
+    if args.selection_mode == "highest_energy":
+        print(f"  highest energy option: {HIGHEST_ENERGY_OPTION}")
     print(f"  source               : {source}")
     if snapshot_meta:
         for k, v in snapshot_meta.items():
@@ -740,13 +961,16 @@ def main() -> int:
         print("  NOTE: no movement instructions in the genome; any positional change you")
         print("        see in the replay is offspring placement, not active chemotaxis.")
     print(f"  reproduction replay : {args.reproduction}")
+    print(f"  num_of_trials       : {num_of_trials}")
 
     world_x, world_y = vhf.read_world_size()
     env_world_x, env_world_y = vhf.read_env_world_size()
     if args.updates is not None:
         num_updates = max(1, args.updates)
     else:
-        num_updates = vhf.replay_updates_for_lifespan(os.path.abspath("avida.cfg"), len(genome))
+        num_updates = vhf.replay_updates_for_lifespan(
+            os.path.abspath("avida.cfg"), len(genome), fallback=DEFAULT_REPLAY_UPDATES,
+        )
     print(f"  replay updates       : {num_updates}")
 
     avida_bin = find_avida_binary(args.avida)
@@ -754,28 +978,51 @@ def main() -> int:
         print("ERROR: cannot find avida binary. Try --avida ../../bin/avida", file=sys.stderr)
         return 1
 
-    replay_dir = os.path.join(os.getcwd(), "_replay_living_champion")
-    if os.path.exists(replay_dir):
-        shutil.rmtree(replay_dir)
-    vhf.setup_replay(
-        champion_org,
-        replay_dir,
-        world_x,
-        world_y,
-        num_updates,
-        allow_reproduction=(args.reproduction == "on"),
-    )
-    vhf.run_avida(replay_dir, avida_bin, timeout_sec=max(120.0, 0.05 * num_updates + 30.0))
-
-    trajectory = vhf.parse_org_loc_files(replay_dir)
-    if not trajectory:
+    replay_root = os.path.join(os.getcwd(), f"_replay_living_champion_{os.getpid()}")
+    trial_energies: list[float] = []
+    trajectory = None
+    res_grid = None
+    max_live_orgs = 0
+    try:
+        for trial_idx in range(num_of_trials):
+            replay_dir = replay_root if num_of_trials == 1 else f"{replay_root}_{trial_idx + 1}"
+            print(f"  trial {trial_idx + 1}/{num_of_trials}")
+            trajectory, res_grid, max_live_orgs, energy = run_replay_trial(
+                champion_org,
+                replay_dir,
+                avida_bin,
+                world_x,
+                world_y,
+                env_world_x,
+                env_world_y,
+                num_updates,
+                allow_reproduction=(args.reproduction == "on"),
+                timeout_sec=args.timeout,
+            )
+            if energy is not None:
+                trial_energies.append(energy)
+                print(f"    final energy       : {energy:.6g}")
+            else:
+                print("    final energy       : unavailable (rebuild Avida so org_loc includes stored_energy)")
+    except RuntimeError as err:
         print("ERROR: replay produced no trajectory.", file=sys.stderr)
-        shutil.rmtree(replay_dir, ignore_errors=True)
+        print(f"ERROR: {err}", file=sys.stderr)
+        for path in glob.glob(f"{replay_root}*"):
+            shutil.rmtree(path, ignore_errors=True)
         if generated_org_path and os.path.exists(generated_org_path):
             os.remove(generated_org_path)
         return 1
 
-    max_live_orgs = max((len(orgs) for _, orgs in trajectory), default=0)
+    if trajectory is None or res_grid is None:
+        print("ERROR: replay did not complete.", file=sys.stderr)
+        return 1
+
+    if trial_energies:
+        recorded_energy = sum(trial_energies) / len(trial_energies)
+        print(f"  recorded energy     : {recorded_energy:.6g}  (average over {len(trial_energies)} trials)")
+    else:
+        print("  recorded energy     : unavailable")
+
     print(f"  max live orgs   : {max_live_orgs}")
 
     if args.reproduction == "on":
@@ -801,8 +1048,6 @@ def main() -> int:
                 )
             else:
                 print("  reproduction frame  : not observed in this replay")
-
-    res_grid = vhf.load_resource_grid(replay_dir, env_world_x, env_world_y)
 
     first = None
     for u, orgs in trajectory:
@@ -833,7 +1078,8 @@ def main() -> int:
             show_gradient_layer_labels=True,
         )
 
-    shutil.rmtree(replay_dir, ignore_errors=True)
+    for path in glob.glob(f"{replay_root}*"):
+        shutil.rmtree(path, ignore_errors=True)
     if generated_org_path and os.path.exists(generated_org_path):
         os.remove(generated_org_path)
     return 0
